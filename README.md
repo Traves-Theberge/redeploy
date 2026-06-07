@@ -268,6 +268,7 @@ All data commands accept `--json`. Run `pideploy help <command>` for every optio
 | `pideploy serve <port>` / `unserve <port>` | Expose / stop exposing a port over Tailscale HTTPS |
 | `pideploy logs [app]` | Tail a deployed app's logs |
 | `pideploy config [list\|get\|set\|edit]` | Manage defaults |
+| `pideploy env [--name NAME]` | Sync local `.env` → a GitHub Actions secret |
 | `pideploy rm` | Deregister this repo's runner |
 | `pideploy setup` | One-time host prep (linger, Tailscale operator) |
 | `pideploy doctor` | Check all prerequisites (exit 1 if any fail) |
@@ -276,7 +277,27 @@ All data commands accept `--json`. Run `pideploy help <command>` for every optio
 | `pideploy help [command]` | Overview, or detailed help for one command |
 | `pideploy version` | Print version |
 
-Global flags: `--json` (structured output) · `--agent` · `--skill` · `--yes` (no-op) · `--port N` · `--name NAME` · `--serve` / `--no-serve`
+Global flags: `--json` (structured output) · `--agent` · `--skill` · `--yes` (no-op) · `--port N` · `--name NAME` · `--serve` / `--no-serve` · `--dotenv-secret NAME` / `--no-dotenv`
+
+---
+
+## 🔑 Secrets — `.env` as the source of truth
+
+Apps usually need secrets (API keys, tokens). Because the runner builds in a **fresh checkout** that has no gitignored files, your local `.env` won't be there — so `pideploy` bridges it for you, the secure way:
+
+```
+   .env (local, gitignored)         <-- you edit this; the source of truth
+        │  pideploy init  (or: pideploy env)
+        ▼
+   GitHub Actions secret            <-- gh secret set  (encrypted)
+        │  deploy workflow
+        ▼
+   .env recreated on the runner     <-- before `docker compose up`
+```
+
+- When a `.env` exists, `init` uploads it to a GitHub Actions secret (default name `PIDEPLOY_DOTENV`) via `gh secret set`, and the generated workflow recreates `.env` on the runner before `docker compose up`.
+- Edit `.env` and run **`pideploy env`** to re-sync. Use `--dotenv-secret NAME` to choose the secret name, or `--no-dotenv` to skip.
+- `.env` is **never committed** (init gitignores it). Secrets live only in your local file and GitHub's encrypted secret store.
 
 ---
 

@@ -208,6 +208,37 @@ assert_ok "rm: runner dir gone"       "[ ! -d '$PIDEPLOY_HOME/runners/testuser-t
 assert_ok "rm: state cleared"         "[ ! -f '$PIDEPLOY_STATE/testuser-testrepo' ]"
 
 # ════════════════════════════════════════════════════════════════════════════
+grp "Secrets: no leakage"
+SREPO="$SBOX/secret-proj"; mkdir -p "$SREPO" "$SBOX/sremote.git"
+( cd "$SBOX/sremote.git" && git init -q --bare )
+( cd "$SREPO" && git init -q && git remote add origin "$SBOX/sremote.git" \
+   && echo '{"name":"s","scripts":{"start":"true"}}' > package.json \
+   && git add -A && git commit -qm init && git branch -M main && git push -q -u origin main )
+SENTINEL="SUPER_SECRET_SENTINEL_9f3xQ"
+printf 'API_KEY=%s\n' "$SENTINEL" > "$SREPO/.env"
+SOUT_ALL="$(cd "$SREPO" && $BIN init --port 8080 2>&1)"          # stdout + stderr together
+assert_absent   "init output never contains the secret value"   "$SOUT_ALL" "$SENTINEL"
+assert_absent   ".pideploy.conf has no secret value"            "$(cat "$SREPO/.pideploy.conf")" "$SENTINEL"
+assert_contains ".pideploy.conf records only the secret NAME"   "$(cat "$SREPO/.pideploy.conf")" "dotenv_secret=PIDEPLOY_DOTENV"
+assert_absent   "workflow has no secret value"                  "$(cat "$SREPO/.github/workflows/deploy.yml")" "$SENTINEL"
+assert_contains "workflow references the secret by name"        "$(cat "$SREPO/.github/workflows/deploy.yml")" 'secrets.PIDEPLOY_DOTENV'
+assert_contains "workflow removes .env after deploy"            "$(cat "$SREPO/.github/workflows/deploy.yml")" "rm -f .env"
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+  python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' "$SREPO/.github/workflows/deploy.yml" 2>/dev/null \
+    && ok "secrets workflow is valid YAML" || bad "secrets workflow is valid YAML" "did not parse"
+else ok "secrets workflow is valid YAML (skip: no pyyaml)"; fi
+assert_eq       ".env is NOT tracked by git"                    "$(cd "$SREPO" && git ls-files | grep -c '\.env$' || true)" "0"
+assert_contains ".gitignore protects .env"                      "$(cat "$SREPO/.gitignore")" ".env"
+assert_absent   "env command output never contains the value"   "$(cd "$SREPO" && $BIN env 2>&1)" "$SENTINEL"
+# --no-dotenv: even with a .env present, no secret step is emitted
+NOENV="$SBOX/noenv-proj"; mkdir -p "$NOENV" "$SBOX/ne.git"; ( cd "$SBOX/ne.git" && git init -q --bare )
+( cd "$NOENV" && git init -q && git remote add origin "$SBOX/ne.git" && echo '{}' > package.json \
+   && printf 'X=%s\n' "$SENTINEL" > .env && git add package.json && git commit -qm i && git branch -M main && git push -q -u origin main )
+( cd "$NOENV" && $BIN init --port 8080 --no-dotenv >/dev/null 2>&1 )
+assert_absent   "--no-dotenv omits the provision step"          "$(cat "$NOENV/.github/workflows/deploy.yml")" "secrets."
+assert_absent   "--no-dotenv: no secret value in workflow"      "$(cat "$NOENV/.github/workflows/deploy.yml")" "$SENTINEL"
+
+# ════════════════════════════════════════════════════════════════════════════
 grp "AI contract: JSON output"
 # assert_struct <name> <json> <python-bool-expr over `d`>  — strict shape/type check
 assert_struct() {

@@ -135,16 +135,29 @@ detect_dockerfile() {
 # ════════════════════════════════════════════════════════════════════════════
 
 cmd_init() {
-  local port="" name="" do_serve; do_serve=$(cfg auto_serve)
+  local port="" name="" do_serve dotenv_name="" want_dotenv=auto; do_serve=$(cfg auto_serve)
   while [ $# -gt 0 ]; do case "$1" in
     --port) port="$2"; shift 2;; --name) name="$2"; shift 2;;
     --serve) do_serve=true; shift;; --no-serve) do_serve=false; shift;;
+    --dotenv-secret) dotenv_name="$2"; want_dotenv=yes; shift 2;;
+    --no-dotenv) want_dotenv=no; shift;;
     *) usage_err "init: unknown flag: $1";; esac; done
   need git; need gh; need docker
   local nwo slug app branch; nwo=$(resolve_repo); slug=$(repo_slug "$nwo")
   app="${name:-$(cfg app_name)}"; app="${app:-${nwo##*/}}"
   branch=$(cfg default_branch); : "${port:=$(cfg default_port)}"
   log "repo=$nwo app=$app port=$port branch=$branch runner=pi-$slug"
+
+  # secrets: a local .env is the source of truth — synced to a GitHub Actions
+  # secret, then recreated in the runner's checkout by the deploy workflow.
+  local dotenv_secret=""
+  if [ "$want_dotenv" != no ] && [ -f .env ]; then
+    dotenv_secret="${dotenv_name:-$(cfg dotenv_secret)}"; dotenv_secret="${dotenv_secret:-PIDEPLOY_DOTENV}"
+    CFG[dotenv_secret]="$dotenv_secret"
+    if gh secret set "$dotenv_secret" --repo "$nwo" < .env 2>/dev/null; then
+      log "synced .env -> GitHub secret $dotenv_secret (source of truth: .env)"
+    else warn "could not set secret $dotenv_secret (need admin on $nwo); deploy may lack .env"; fi
+  fi
 
   # scaffold ----------------------------------------------------------------
   local files=()
@@ -181,8 +194,10 @@ jobs:
     runs-on: [self-hosted, $(cfg runner_label)]
     steps:
       - uses: actions/checkout@v4
+$( ds=$(cfg dotenv_secret); [ -n "$ds" ] && printf '      - name: Provision .env from secret\n        env:\n          DOTENV: ${{ secrets.%s }}\n        run: printf '"'"'%%s'"'"' "$DOTENV" > .env' "$ds" )
       - run: docker compose up -d --build --remove-orphans
 $( [ "$(cfg prune_images)" = true ] && printf '      - run: docker image prune -f' )
+$( ds=$(cfg dotenv_secret); [ -n "$ds" ] && printf '      - name: Remove provisioned .env\n        if: always()\n        run: rm -f .env' )
 YML
   files+=(.github/workflows/deploy.yml)
   log "wrote .github/workflows/deploy.yml"
@@ -192,6 +207,7 @@ app_name=$app
 default_port=$port
 default_branch=$branch
 CONF
+  [ -n "$dotenv_secret" ] && printf 'dotenv_secret=%s\n' "$dotenv_secret" >> "$REPO_CONF"
   files+=("$REPO_CONF")
   log "wrote $REPO_CONF"
   if ! { [ -f .gitignore ] && grep -qE '^\.env$|^\*\.env$|^\.env\*' .gitignore; }; then
@@ -323,6 +339,19 @@ cmd_deploy() {
   fi
 }
 
+cmd_env() { # sync local .env (source of truth) to a GitHub Actions secret
+  local name=""
+  while [ $# -gt 0 ]; do case "$1" in --name) name="$2"; shift 2;; *) usage_err "env: unknown flag: $1";; esac; done
+  need gh
+  local nwo; nwo=$(resolve_repo)
+  [ -f .env ] || die "no .env in this repo (the source of truth for secrets)"
+  local secret="${name:-$(cfg dotenv_secret)}"; secret="${secret:-PIDEPLOY_DOTENV}"
+  gh secret set "$secret" --repo "$nwo" < .env || die "gh secret set failed (need admin on $nwo)"
+  log "synced .env -> GitHub secret $secret for $nwo"
+  if [ "$FORMAT" = json ]; then printf '{"secret":%s,"repo":%s}\n' "$(json_str "$secret")" "$(json_str "$nwo")"
+  else printf 'secret=%s\n' "$secret"; fi
+}
+
 cmd_config() {
   local sub="${1:-list}"; shift || true
   case "$sub" in
@@ -439,6 +468,7 @@ HTTPS. This CLI is plain and non-interactive.
 - `pideploy unserve <port>` — stop exposing.
 - `pideploy logs [app]` — exec `docker logs -f` (stdout passthrough).
 - `pideploy config [list|get <k>|set <k> <v>|edit] [--json]` — manage defaults.
+- `pideploy env [--name NAME] [--json]` — sync local .env to a GitHub Actions secret.
 - `pideploy rm` — deregister this repo's runner.
 - `pideploy skill` — print a Claude Code skill for this CLI (also: `--skill`).
 - `pideploy help [command]` — overview, or detailed help + options for one command.
@@ -458,6 +488,12 @@ node_version, python_version, go_version, app_name (repo-level).
 - `.github/workflows/deploy.yml` (runs-on [self-hosted, <label>]; push + dispatch only).
 - `.pideploy.conf` (port/name/branch; safe to commit, no secrets).
 - appends `.env` to `.gitignore`.
+
+## Secrets (.env)
+A local `.env` is the source of truth. When present, `init` uploads it to a GitHub
+Actions secret (`gh secret set`, default name PIDEPLOY_DOTENV) and the generated
+workflow recreates `.env` on the runner before `docker compose up`. `.env` is never
+committed. Re-sync after editing it with `pideploy env`. Skip with `--no-dotenv`.
 
 ## Agent quickstart (deploy a repo end-to-end)
 1. cd <repo>  (needs GitHub remote; else: gh repo create --source=. --private --push)
@@ -493,11 +529,19 @@ USAGE
   pideploy init [--port N] [--name NAME] [--serve|--no-serve] [--json]
 
 OPTIONS
-  --port N      Container port to bind on 127.0.0.1 and EXPOSE (default: config default_port=8080).
-  --name NAME   App / Docker-compose stack / container name (default: .pideploy.conf app_name, else repo name).
-  --serve       After deploy, expose the port over Tailscale HTTPS immediately.
-  --no-serve    Do not expose (overrides config auto_serve).
-  --json        Emit the result object {repo,app,port,branch,runner,runner_registered,pushed,files}.
+  --port N             Container port to bind on 127.0.0.1 and EXPOSE (default: config default_port=8080).
+  --name NAME          App / Docker-compose stack / container name (default: .pideploy.conf app_name, else repo name).
+  --serve              After deploy, expose the port over Tailscale HTTPS immediately.
+  --no-serve           Do not expose (overrides config auto_serve).
+  --dotenv-secret NAME GitHub Actions secret name to sync .env into (default: PIDEPLOY_DOTENV when a .env exists).
+  --no-dotenv          Do not sync .env to a secret even if one exists.
+  --json               Emit the result object {repo,app,port,branch,runner,runner_registered,pushed,files}.
+
+SECRETS
+  If a .env exists, init treats it as the source of truth: it uploads it to a
+  GitHub Actions secret via 'gh secret set', and the generated workflow recreates
+  .env from that secret on the runner before 'docker compose up'. Re-sync after
+  editing .env with 'pideploy env'.
 
 OUTPUT
   stdout: key=value result (or JSON). stderr: progress (pideploy: ...).
@@ -547,6 +591,17 @@ H
     logs) cat <<'H'
 pideploy logs — tail a deployed app's container logs (follows; Ctrl-C to stop).
 USAGE   pideploy logs [app]      # app defaults to the first running container
+H
+;;
+    env) cat <<'H'
+pideploy env — sync the local .env (source of truth) to a GitHub Actions secret.
+
+Uploads ./.env via `gh secret set` so the deploy workflow can recreate it on the
+runner before `docker compose up`. `init` does this automatically when a .env is
+present; run `env` again after editing .env. Never commits .env (it's gitignored).
+
+USAGE   pideploy env [--name NAME]        # default secret: PIDEPLOY_DOTENV (or .pideploy.conf dotenv_secret)
+OUTPUT  stdout: secret=<NAME> (or JSON {secret,repo}); stderr: progress.
 H
 ;;
     config) cat <<'H'
@@ -641,8 +696,10 @@ for any command's options. Do not guess flags — confirm with `help`.
   `127.0.0.1:<port>:<port>`. Mismatch = unreachable.
 - NEVER add a `pull_request` trigger to the generated workflow on a public repo —
   it would let a fork run code on the self-hosted runner.
-- NEVER put secrets in `.pideploy.conf` or git. Use GitHub Actions secrets or
-  Portainer env. `init` gitignores `.env`.
+- NEVER commit secrets. A local `.env` is the source of truth: `init` syncs it to
+  a GitHub Actions secret (`gh secret set`, default PIDEPLOY_DOTENV) and the workflow
+  recreates `.env` on the runner before compose up. Re-sync after edits: `pideploy env`.
+  `.env` is gitignored. Skip syncing with `--no-dotenv`.
 - One runner per repo (personal GitHub accounts can't share runners).
 
 ## Standard workflow (end-to-end)
@@ -667,8 +724,8 @@ for any command's options. Do not guess flags — confirm with `help`.
 ## Command quick reference
 `setup` host prep · `doctor` prereqs · `init` set up repo · `deploy` redeploy now ·
 `status` state · `serve`/`unserve` expose · `logs` tail · `config` defaults ·
-`rm` remove runner · `agent` manual · `skill` this skill · `help <cmd>` per-command
-help. Add `--json` to init/status/deploy/serve/config/doctor.
+`env` sync .env→secret · `rm` remove runner · `agent` manual · `skill` this skill ·
+`help <cmd>` per-command help. Add `--json` to init/status/deploy/serve/config/doctor.
 SKILL
 }
 
@@ -714,6 +771,7 @@ COMMANDS
   serve <port> | unserve <port>             expose / stop exposing a port (Tailscale HTTPS)
   logs [app]                                tail a deployed app's container logs
   config list|get <k>|set <k> <v>|edit      view or change defaults
+  env [--name NAME]                         sync local .env -> GitHub Actions secret
   rm                                        remove this repo's runner
   setup                                     one-time host prep (linger, tailscale operator)
   doctor                                    check prerequisites (exit 1 if any fail)
@@ -755,6 +813,7 @@ main() {
     unserve) cmd_unserve "${args[@]}";;
     logs)    cmd_logs    "${args[@]}";;
     config)  cmd_config  "${args[@]}";;
+    env)     cmd_env     "${args[@]}";;
     rm)      cmd_rm      "${args[@]}";;
     setup)   cmd_setup   "${args[@]}";;
     doctor)  cmd_doctor  "${args[@]}";;
