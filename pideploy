@@ -122,7 +122,10 @@ resolve_repo() {
   gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null \
     || die "no GitHub remote (create one: gh repo create --source=. --private --push)"
 }
-tailnet_host() { tailscale status --json 2>/dev/null | grep -o '"DNSName":"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/\.$//'; }
+tailnet_host() { # robust to pretty-printed JSON ("DNSName": "x"); never fails the pipeline
+  tailscale status --json 2>/dev/null | tr -d ' ' | grep -oE '"DNSName":"[^"]+"' | head -1 | cut -d'"' -f4 | sed 's/\.$//'
+  return 0
+}
 linger_on() { [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" = yes ]; }
 
 ensure_template() {
@@ -307,25 +310,74 @@ CONF
   return 0
 }
 
+_serve_fail() { # consume /tmp/pd.err -> well-formed error, exit nonzero
+  local detail; detail=$(tr '\n' ' ' < /tmp/pd.err | sed 's/  */ /g; s/^ *//; s/ *$//')
+  warn "if access denied, run once: sudo tailscale set --operator=$USER"
+  emit_err "serve failed: ${detail:-unknown}" 1
+  return 1
+}
+_norm_path() { # normalize to a single leading slash, no trailing slash ("/" stays "/")
+  local p="/${1#/}"; p="${p%/}"; [ -z "$p" ] && p="/"; printf '%s' "$p"
+}
+# default the serve path/port from the repo: path=/<app_name>, port=repo's port
+_serve_path() { local p="$1"; [ -z "$p" ] && { local a; a=$(cfg app_name); [ -n "$a" ] && p="/$a" || p="/"; }; _norm_path "$p"; }
+
 cmd_serve() {
-  local port="${1:-}"; [ -n "$port" ] || usage_err "usage: pideploy serve <port>"
+  local port="" path="" port_mode=false
+  while [ $# -gt 0 ]; do case "$1" in
+    --path) path="$2"; shift 2;;
+    --port-mode) port_mode=true; shift;;
+    --*) usage_err "serve: unknown flag: $1";;
+    *) [ -z "$port" ] && port="$1"; shift;;
+  esac; done
   need tailscale
-  log "exposing 127.0.0.1:$port over Tailscale (HTTPS)"
-  if tailscale serve --bg --https=443 "$port" 2>/tmp/pd.err || sudo -n tailscale serve --bg --https=443 "$port" 2>>/tmp/pd.err; then
-    local h url; h=$(tailnet_host); url="https://${h:-localhost}/"
-    if [ "$FORMAT" = json ]; then printf '{"url":%s,"port":%s}\n' "$(json_str "$url")" "$port"; else printf '%s\n' "$url"; fi
+  [ -n "$port" ] || port=$(cfg default_port)
+  [ -n "$port" ] || usage_err "usage: pideploy serve [port] [--path /name] [--port-mode]"
+  local host url; host=$(tailnet_host)
+
+  if [ "$port_mode" = true ]; then
+    # own HTTPS port: app gets the root of https://host:<port>/ (no sub-path needed)
+    url="https://${host:-localhost}:$port/"
+    log "exposing 127.0.0.1:$port at $url (port mode)"
+    tailscale serve --bg --https="$port" "$port" >/dev/null 2>/tmp/pd.err \
+      || sudo -n tailscale serve --bg --https="$port" "$port" >/dev/null 2>>/tmp/pd.err || { _serve_fail; return 1; }
+    if [ "$FORMAT" = json ]; then printf '{"url":%s,"port":%s,"path":%s}\n' "$(json_str "$url")" "$port" '"/"'
+    else printf '%s\n' "$url"; fi
   else
-    local detail; detail=$(tr '\n' ' ' < /tmp/pd.err | sed 's/  */ /g; s/^ *//; s/ *$//')
-    warn "if access denied, run once: sudo tailscale set --operator=$USER"
-    emit_err "serve failed: ${detail:-unknown}" 1
-    return 1
+    # path-based on :443 — many apps coexist at https://host/<path>
+    path=$(_serve_path "$path")
+    local sargs=(--bg --https=443); [ "$path" != "/" ] && sargs+=(--set-path="$path")
+    url="https://${host:-localhost}${path}"
+    log "exposing 127.0.0.1:$port at $url (path mode)"
+    tailscale serve "${sargs[@]}" "$port" >/dev/null 2>/tmp/pd.err \
+      || sudo -n tailscale serve "${sargs[@]}" "$port" >/dev/null 2>>/tmp/pd.err || { _serve_fail; return 1; }
+    if [ "$FORMAT" = json ]; then printf '{"url":%s,"port":%s,"path":%s}\n' "$(json_str "$url")" "$port" "$(json_str "$path")"
+    else printf '%s\n' "$url"; fi
   fi
 }
 
 cmd_unserve() {
-  local port="${1:-}"; [ -n "$port" ] || usage_err "usage: pideploy unserve <port>"
-  tailscale serve --https=443 off 2>/dev/null || sudo -n tailscale serve --https=443 off 2>/dev/null || true
-  log "stopped serving (port $port)"
+  local port="" path="" port_mode=false
+  while [ $# -gt 0 ]; do case "$1" in
+    --path) path="$2"; shift 2;;
+    --port-mode) port_mode=true; shift;;
+    --*) usage_err "unserve: unknown flag: $1";;
+    *) [ -z "$port" ] && port="$1"; shift;;
+  esac; done
+  need tailscale
+  if [ "$port_mode" = true ]; then
+    [ -n "$port" ] || port=$(cfg default_port)
+    tailscale serve --https="$port" off 2>/dev/null || sudo -n tailscale serve --https="$port" off 2>/dev/null || true
+    log "stopped serving https port $port"
+  else
+    path=$(_serve_path "$path")
+    if [ "$path" = "/" ]; then
+      tailscale serve --https=443 off 2>/dev/null || sudo -n tailscale serve --https=443 off 2>/dev/null || true
+    else
+      tailscale serve --https=443 --set-path="$path" off 2>/dev/null || sudo -n tailscale serve --https=443 --set-path="$path" off 2>/dev/null || true
+    fi
+    log "stopped serving $path"
+  fi
 }
 
 cmd_status() {
@@ -558,7 +610,8 @@ HTTPS. This CLI is plain and non-interactive.
 - Runner connects OUTBOUND to GitHub, so the host needs no inbound ports and
   works tailnet-only. GitHub webhooks cannot reach it — do not use them.
 - Deploys run `docker compose up -d --build`; Portainer shares the Docker engine.
-- Exposure: `tailscale serve --https=443 <port>`; apps bind 127.0.0.1 only.
+- Exposure: `pideploy serve` (Tailscale HTTPS); apps bind 127.0.0.1 only. Many apps
+  coexist via distinct paths on https://<host>/ (see "Exposing multiple apps").
 
 ## How the deploy is routed (no address/SSH — label matching)
 There is NO IP, hostname, SSH key, or target in the repo. `init` registers a
@@ -593,8 +646,9 @@ Result: containers run on the host's Docker engine (visible in Portainer);
   host then init it (registers the runner here so it deploys here). Run on the host.
 - `pideploy deploy [--json]` — trigger a deploy now.
 - `pideploy status [--json]` — runners, stacks, serve, linger.
-- `pideploy serve <port> [--json]` — expose a port; prints the https URL on stdout.
-- `pideploy unserve <port>` — stop exposing.
+- `pideploy serve [port] [--path /name] [--port-mode] [--json]` — expose a port over
+  Tailscale HTTPS; prints the URL on stdout. Path-based by default (many apps coexist).
+- `pideploy unserve [port] [--path /name] [--port-mode]` — remove one app's route.
 - `pideploy logs [app]` — exec `docker logs -f` (stdout passthrough).
 - `pideploy config [list|get <k>|set <k> <v>|edit] [--json]` — manage defaults.
 - `pideploy ports [--json]` — list the host port registry (repo→port).
@@ -629,6 +683,15 @@ A host-wide registry ($PIDEPLOY_HOME/ports, <owner-repo>=<port>) keeps every app
 a distinct, stable port. `init` auto-assigns the lowest free port at/above default_port
 (8080) when --port is omitted; an explicit --port is rejected (exit 1) if another app
 already uses it. Re-init reuses the repo's recorded port; `rm` frees it. See `pideploy ports`.
+
+## Exposing multiple apps (path-based, no collisions)
+`serve` is path-based on https://<host>:443 by default: each app mounts at a distinct
+path (default /<app_name>) via `tailscale serve --set-path`, so many apps coexist:
+  https://<host>/api -> :8080 · https://<host>/web -> :8081 · https://<host>/bot -> :8082
+In a repo, `pideploy serve` needs no args (port from .pideploy.conf, path from app_name).
+Caveat: the app must tolerate a sub-path (relative links / configurable base URL). If it
+can't, use `--port-mode` to serve it at https://<host>:<port>/ (its own HTTPS port, root).
+`unserve` removes just one route. Tailscale routing is unrelated to deploy targeting.
 
 ## Secrets (.env)
 A local `.env` is the source of truth. When present, `init` uploads it to a GitHub
@@ -723,17 +786,32 @@ H
 pideploy serve — expose a local port over Tailscale with HTTPS (tailnet-only).
 
 Apps bind 127.0.0.1; this fronts them with a real TLS cert reachable from your
-tailnet (and nowhere else).
+tailnet (and nowhere else). MANY apps can be served at once: each gets a distinct
+path on https://<host>/ — so they never collide.
 
-USAGE   pideploy serve <port> [--json]
-OUTPUT  stdout: the https URL (or JSON {url,port}). stderr: progress.
+USAGE   pideploy serve [port] [--path /name] [--port-mode] [--json]
+
+OPTIONS
+  port         Local port to expose (default: the current repo's port, from .pideploy.conf).
+  --path /name URL path to mount at (default: /<app_name> in a repo, else /). Each app
+               at a distinct path coexists: https://<host>/api, https://<host>/web, ...
+  --port-mode  Instead of a path, serve at https://<host>:<port>/ (the app gets the root
+               of its own HTTPS port). Use when an app can't handle a sub-path.
+  --json       Emit {url, port, path}.
+
+OUTPUT  stdout: the https URL. stderr: progress.
 NOTE    Needs Tailscale HTTPS enabled + `sudo tailscale set --operator=$USER` (see: pideploy setup).
+EXAMPLES
+  pideploy serve                 # in a repo: https://<host>/<app_name>
+  pideploy serve 8080 --path /api
+  pideploy serve 8080 --port-mode    # https://<host>:8080/
 H
 ;;
     unserve) cat <<'H'
-pideploy unserve — stop exposing over Tailscale (turns off HTTPS serve on :443).
-Note: today serve maps one app to the host root, so this clears that mapping.
-USAGE   pideploy unserve <port>
+pideploy unserve — remove ONE app's Tailscale route (others stay up).
+Mirrors serve's resolution: path-based by default (default path /<app_name>);
+--port-mode removes the https://<host>:<port>/ mapping instead.
+USAGE   pideploy unserve [port] [--path /name] [--port-mode]
 H
 ;;
     logs) cat <<'H'
@@ -897,6 +975,9 @@ then edit. NEVER commit a real host config or .env — only the placeholder temp
   and compose maps `127.0.0.1:<port>:<port>`. Mismatch = unreachable.
 - Ports never collide: `init` auto-assigns a free, stable port per repo (registry).
   Omit `--port` to auto-assign; an explicit taken `--port` fails. See `pideploy ports`.
+- Expose many apps at once: `pideploy serve` is path-based (each app at https://<host>/<app>).
+  In a repo it needs no args. If an app can't handle a sub-path, use `--port-mode`
+  (https://<host>:<port>/). `unserve` removes one route.
 - NEVER add a `pull_request` trigger to the generated workflow on a public repo —
   it would let a fork run code on the self-hosted runner.
 - NEVER commit secrets. A local `.env` is the source of truth: `init` syncs it to

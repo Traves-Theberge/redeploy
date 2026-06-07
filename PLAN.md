@@ -124,9 +124,9 @@ pideploy/
 - ✅ `pideploy onboard <repo>` — clone + init on the host in one step
 - ✅ `.env` → GitHub Actions secret provisioning + cleanup
 - ✅ Host-scoped config + shareable template
-- ⬜ **Multi-app serve**: `tailscale serve --https=443 <port>` maps the whole root,
-  so a second app collides. Add path-based serve (`--set-path /app`) or per-app
-  subdomains. **Known limitation today: one served app per host root.**
+- ✅ **Multi-app serve** — path-based by default (`tailscale serve --set-path /<app>`),
+  so many apps coexist at `https://<host>/<app>`; `--port-mode` escape hatch for apps
+  that can't handle a sub-path. Verified live (Portainer `/` + Fetch `/Fetch`).
 - ⬜ `pideploy open` / `url` — print/launch the app's tailnet URL
 - ⬜ Optional Portainer **API** integration (create a true Git stack) instead of compose
 - ⬜ Org-level shared-runner mode (one runner, many repos — needs a GitHub org)

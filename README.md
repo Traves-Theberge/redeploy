@@ -293,7 +293,7 @@ All data commands accept `--json`. Run `pideploy help <command>` for every optio
 | `pideploy config template` | Print a shareable placeholder host config |
 | `pideploy deploy` | Trigger a deploy now (workflow_dispatch, else empty commit) |
 | `pideploy status` | Runners, running stacks, Tailscale serve, linger |
-| `pideploy serve <port>` / `unserve <port>` | Expose / stop exposing a port over Tailscale HTTPS |
+| `pideploy serve [port] [--path /name] [--port-mode]` / `unserve …` | Expose / stop exposing over Tailscale HTTPS (path-based; many apps coexist) |
 | `pideploy logs [app]` | Tail a deployed app's logs |
 | `pideploy config [list\|get\|set\|edit]` | Manage defaults |
 | `pideploy ports` | List which repo uses which port (host registry) |
@@ -373,6 +373,25 @@ you/web=8081
 you/bot=8082
 ```
 
+### Exposing many apps over Tailscale (path-based)
+
+`pideploy serve` is **path-based** by default: each app mounts at a distinct path on your one tailnet HTTPS host, so they all stay reachable at once.
+
+```console
+$ cd ~/code/api && pideploy serve      # in a repo: port + path inferred
+https://your-pi.ts.net/api
+$ cd ~/code/web && pideploy serve
+https://your-pi.ts.net/web
+$ cd ~/code/bot && pideploy serve
+https://your-pi.ts.net/bot
+```
+
+- In a repo, `serve` needs no args — the **port** comes from `.pideploy.conf` and the **path** defaults to `/<app_name>`. Override with `--path /custom`.
+- **Caveat:** the app must tolerate a sub-path (relative links, or a configurable base URL). If it can't, use **`--port-mode`** to give it the root of its own HTTPS port: `pideploy serve 8080 --port-mode` → `https://your-pi.ts.net:8080/`.
+- `pideploy unserve` (same flags) removes just that one app's route; the others stay up.
+
+> Tailscale is only the **access** layer here — it never affects *where* a deploy runs (that's the runner label).
+
 ### Open-source / leak safety
 - The **real host config never lives in a repo** — only `config.example` (placeholders) is committed.
 - `.pideploy.conf` is committed but **secret-free** (only the secret's *name*).
@@ -445,7 +464,7 @@ Still stuck? `pideploy doctor` pinpoints the broken prerequisite.
 
 See [`PLAN.md`](PLAN.md) for the full plan. Highlights:
 
-- Path-based multi-app serve (multiple apps under one host)
+- ✅ Path-based multi-app serve (multiple apps under one host) — **done**
 - `pideploy setup` — one-command host bootstrap
 - Org-level runner mode (one runner, many repos)
 - Optional Portainer-API Git-stack integration

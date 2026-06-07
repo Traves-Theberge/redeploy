@@ -317,6 +317,24 @@ assert_eq "stable: re-init reuses the same port"   "$(portof "$PA")" "8080"
 assert_absent "rm frees the port from registry"    "$(cat "$PIDEPLOY_HOME/ports" 2>/dev/null)" "testuser-appa="
 
 # ════════════════════════════════════════════════════════════════════════════
+grp "Multi-app serve (path-based + --port-mode)"
+# in a repo, the path defaults to /<app_name> so apps don't collide at the root
+assert_contains "serve: default path = /<app_name>" "$(cd "$REPO" && $BIN serve 8080 2>/dev/null)" "test-pi.tailnet.ts.net/testrepo"
+assert_contains "serve: explicit --path"            "$(cd "$REPO" && $BIN serve 8080 --path /api 2>/dev/null)" "test-pi.tailnet.ts.net/api"
+assert_contains "serve: bare path is normalized"    "$(cd "$REPO" && $BIN serve 8080 --path web 2>/dev/null)" "test-pi.tailnet.ts.net/web"
+assert_contains "serve: port defaults from repo"    "$(cd "$REPO" && $BIN serve --path /x 2>/dev/null)" "test-pi.tailnet.ts.net/x"
+assert_struct   "serve --json has url/port/path"    "$(cd "$REPO" && $BIN serve 8080 --path /api --json 2>/dev/null)" \
+  "d['path']=='/api' and d['url'].endswith('/api') and isinstance(d['port'],int)"
+# --port-mode → app gets the root of its own HTTPS port
+assert_contains "serve --port-mode → host:port/"    "$(cd "$REPO" && $BIN serve 8080 --port-mode 2>/dev/null)" "test-pi.tailnet.ts.net:8080/"
+assert_struct   "serve --port-mode json"            "$(cd "$REPO" && $BIN serve 8080 --port-mode --json 2>/dev/null)" "':8080/' in d['url']"
+# unserve variants remove a single route cleanly
+assert_ok       "unserve --path runs"               "(cd '$REPO' && $BIN unserve --path /api)"
+assert_ok       "unserve --port-mode runs"          "(cd '$REPO' && $BIN unserve 8080 --port-mode)"
+assert_ok       "unserve default runs"              "(cd '$REPO' && $BIN unserve)"
+assert_exit     "serve unknown flag → 2"            "$BIN serve 8080 --bogus" 2
+
+# ════════════════════════════════════════════════════════════════════════════
 grp "Secrets: no leakage"
 SREPO="$SBOX/secret-proj"; mkdir -p "$SREPO" "$SBOX/sremote.git"
 ( cd "$SBOX/sremote.git" && git init -q --bare )
@@ -388,7 +406,7 @@ assert_contains "serve stdout is the url"       "$(cd "$REPO" && $BIN serve 8080
 assert_exit "doctor exits 0 when healthy"  "$BIN doctor" 0
 assert_exit "usage error (missing key) → 2" "$BIN config get" 2
 assert_exit "unknown command → 2"           "$BIN bogus-cmd" 2
-assert_exit "serve without port → 2"        "$BIN serve" 2
+assert_exit "unserve unknown flag → 2"      "$BIN unserve --bogus" 2
 assert_ok   "setup runs"                    "$BIN setup"
 
 grp "AI contract: error shape"

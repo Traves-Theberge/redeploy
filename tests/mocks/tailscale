@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 a="$*"
 case "$a" in
-  *"status --json"*)            echo '{"Self":{"DNSName":"test-pi.tailnet.ts.net."}}' ;;
+  *"status --json"*)            printf '{\n  "Self": {\n    "DNSName": "test-pi.tailnet.ts.net."\n  }\n}\n' ;;  # pretty-printed (spaces), like real tailscale
   *"serve status"*)             echo "https://test-pi.tailnet.ts.net (tailnet only)" ;;
   *"serve --bg"*)               exit 0 ;;
   *"serve --https=443 off"*)    exit 0 ;;
