@@ -252,7 +252,32 @@ When you run `pideploy init`, it:
 3. **Registers a self-hosted runner** on the Pi as a user systemd service (`pideploy-runner@<owner-repo>`).
 4. **Commits & pushes** — which triggers the first deploy.
 
-Every subsequent push runs `docker compose up -d --build` on the Pi. Because the runner dials *out* to GitHub, **no inbound port or webhook is ever required** — which is exactly why this works on a tailnet-only Pi.
+### How it knows *where* to deploy (no IP, no SSH, no target config)
+
+There is **no address, hostname, SSH key, or deploy target anywhere** in your repo. Routing is done entirely by **GitHub's self-hosted runner + label matching**:
+
+- `init` registers a runner **process on this host** with GitHub, tagged with labels like `[self-hosted, Linux, ARM64, pideploy]`. It holds an **outbound** long-poll connection to GitHub ("I'm online; here are my labels").
+- The generated workflow says `runs-on: [self-hosted, pideploy]` — that's **not an address, it's a label requirement**.
+- When a job is queued, GitHub hands it to a runner whose labels match. The only one that matches for your repo is *yours, on this host* — so the job runs here.
+
+The host reaches **out** to GitHub; GitHub never reaches **in**. That's why it needs zero open ports and works on a tailnet-only machine. Move the runner to a different machine and the same `git push` deploys there instead — **the repo never changes**.
+
+### What every push does, end to end
+
+```
+git push (to your branch)
+   └─ GitHub: on.push matches → queues the "deploy" job (runs-on: [self-hosted, <label>])
+        └─ your runner claims it and runs these steps ON THIS HOST:
+             1. actions/checkout@v4              clone the repo into the runner workdir
+             2. Provision .env from secret       printf "$DOTENV" > .env   (secrets.<NAME>, masked)
+             3. docker compose up -d --build      build images + (re)start containers
+             4. docker image prune -f             drop dangling layers
+             5. Remove provisioned .env           wipe the secret file (if: always())
+   → containers run on this host's Docker engine → Portainer sees them
+   → pideploy serve <port> exposes one over Tailscale HTTPS
+```
+
+Because the runner dials *out*, **no inbound port or webhook is ever required** — exactly why this works on a tailnet-only host.
 
 ---
 

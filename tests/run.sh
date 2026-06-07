@@ -109,6 +109,8 @@ assert_contains "agent: documents json errors" "$AG" '{"error":"<msg>","code":<N
 assert_contains "agent: lists skill command"   "$AG" 'pideploy skill'
 assert_contains "agent: lists help command"    "$AG" 'pideploy help [command]'
 assert_contains "agent: --skill flag"          "$AG" '--skill'
+assert_contains "agent: explains label routing" "$AG" "label matching"
+assert_contains "agent: documents deploy pipeline" "$AG" "Deploy pipeline"
 assert_contains "agent: prereqs"      "$AG" "Prerequisites"
 assert_contains "agent: quickstart"   "$AG" "Agent quickstart"
 assert_contains "agent: troubleshoot" "$AG" "Troubleshooting"
@@ -138,6 +140,7 @@ assert_contains "skill: references --agent" "$SK" "pideploy --agent"
 assert_contains "skill: documents json errors" "$SK" '{"error":"<msg>","code":<N>}'
 assert_contains "skill: reference lists skill+help" "$SK" 'help <cmd>'
 assert_contains "skill: lists setup"        "$SK" "setup"
+assert_contains "skill: explains routing"   "$SK" "How it routes"
 assert_eq "--skill equals skill subcommand" "$($BIN --skill)" "$SK"
 assert_absent "skill has no PII" "$SK" "@example"
 

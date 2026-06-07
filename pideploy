@@ -450,6 +450,23 @@ HTTPS. This CLI is plain and non-interactive.
 - Deploys run `docker compose up -d --build`; Portainer shares the Docker engine.
 - Exposure: `tailscale serve --https=443 <port>`; apps bind 127.0.0.1 only.
 
+## How the deploy is routed (no address/SSH — label matching)
+There is NO IP, hostname, SSH key, or target in the repo. `init` registers a
+runner on THIS host with GitHub, labeled `[self-hosted, Linux, <arch>, <runner_label>]`.
+The workflow's `runs-on: [self-hosted, <runner_label>]` is a label requirement, not
+an address; GitHub dispatches the job to the matching runner — i.e. this host.
+Move the runner elsewhere and the same push deploys there; the repo is unchanged.
+
+## Deploy pipeline (runs on the host for each push to the branch)
+1. `actions/checkout@v4` — clone the repo into the runner workdir.
+2. (if a .env secret is configured) Provision .env: `printf '%s' "$DOTENV" > .env`
+   where DOTENV=`secrets.<NAME>` (GitHub-masked).
+3. `docker compose up -d --build --remove-orphans` — build + (re)start containers.
+4. `docker image prune -f` (if prune_images) — drop dangling layers.
+5. (if .env secret) Remove provisioned .env with `if: always()`.
+Result: containers run on the host's Docker engine (visible in Portainer);
+`pideploy serve <port>` exposes one over Tailscale HTTPS.
+
 ## Prerequisites (verify: `pideploy doctor`, or `pideploy doctor --json`)
 - gh authenticated, scopes `repo` + `workflow`.
 - user in `docker` group; user systemd running; docker engine reachable.
@@ -675,6 +692,15 @@ description: Use when deploying a git repo to a self-hosted Docker host (Raspber
 per-repo self-hosted GitHub Actions runner builds the repo's Docker image on push
 and runs it via docker compose. Apps appear in Portainer and are exposed over
 Tailscale HTTPS. The CLI is plain and non-interactive — ideal to drive directly.
+
+## How it routes & deploys
+No IP/SSH/target is configured. `init` registers a runner on the host labeled
+`[self-hosted, …, <runner_label>]`; the workflow's `runs-on: [self-hosted, <runner_label>]`
+makes GitHub dispatch the job to THAT runner (label match, not an address). The
+runner dials GitHub outbound, so the host needs no open ports. Each push runs, on
+the host: checkout → (provision .env from secret) → `docker compose up -d --build`
+→ prune → (remove .env). Containers land on the host's Docker engine (Portainer
+sees them); `serve` exposes a port over Tailscale.
 
 ## First, read the manual
 Run `pideploy --agent` for the authoritative reference, and `pideploy help <command>`
