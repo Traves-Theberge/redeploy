@@ -296,6 +296,7 @@ All data commands accept `--json`. Run `pideploy help <command>` for every optio
 | `pideploy serve <port>` / `unserve <port>` | Expose / stop exposing a port over Tailscale HTTPS |
 | `pideploy logs [app]` | Tail a deployed app's logs |
 | `pideploy config [list\|get\|set\|edit]` | Manage defaults |
+| `pideploy ports` | List which repo uses which port (host registry) |
 | `pideploy env [--name NAME]` | Sync local `.env` → a GitHub Actions secret |
 | `pideploy rm` | Deregister this repo's runner |
 | `pideploy setup` | One-time host prep (linger, Tailscale operator) |
@@ -356,6 +357,21 @@ Precedence (highest first): **CLI flags → per-repo `.pideploy.conf` → host c
 | `dotenv_secret` | repo | `PIDEPLOY_DOTENV` | GitHub secret name `.env` is synced to (in `.pideploy.conf`) |
 
 **Onboard any repo to this host in one step:** `pideploy onboard <owner/repo> --port N` (run on the host — clones the repo and inits it, so it deploys here).
+
+### Many apps, no port collisions
+
+Deploy as many repos to one host as you like — `pideploy` keeps every app on a **distinct, stable port** via a host registry (`~/.pideploy/ports`):
+
+- Omit `--port` and `init` **auto-assigns** the lowest free port at/above `default_port` (8080). First app → 8080, next → 8081, and so on.
+- Pass an explicit `--port` that another app already uses and it **fails fast** (exit 1) with a suggested free port.
+- Re-deploying a repo **reuses** its recorded port; `pideploy rm` frees it. See all assignments with **`pideploy ports`**.
+
+```console
+$ pideploy ports
+you/api=8080
+you/web=8081
+you/bot=8082
+```
 
 ### Open-source / leak safety
 - The **real host config never lives in a repo** — only `config.example` (placeholders) is committed.

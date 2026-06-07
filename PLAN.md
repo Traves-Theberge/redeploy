@@ -83,6 +83,9 @@ pideploy/
   host → repo (`.pideploy.conf`) → flags precedence.
 - ✅ **`config template` + committed `config.example`** (placeholders) + gitignore guards.
 - ✅ Per-repo runner as user systemd service; **label-based routing** (no IP/SSH/target).
+- ✅ **Host port registry** (`~/.pideploy/ports`): `init` auto-assigns a distinct, stable
+  port per repo; explicit `--port` collisions fail; `pideploy ports` lists, `rm` frees.
+  Deploy many apps on one host with no port collisions.
 - ✅ Stack detection for Dockerfile (node / python / go / static fallback).
 - ✅ **`.env` → GitHub Actions secret** (`gh secret set`), recreated on the runner and
   wiped after; `.pideploy.conf` is secret-free (name only). Leak-guard tests included.
