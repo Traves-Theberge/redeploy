@@ -74,7 +74,7 @@ That's the whole workflow. Edit code, `git push`, done.
 
 ```bash
 # 1. install
-git clone https://github.com/<you>/pideploy && cd pideploy
+git clone https://github.com/Traves-Theberge/pideploy && cd pideploy
 ./install.sh                       # symlinks `pideploy` into ~/.local/bin
 
 # 2. verify your machine is ready
@@ -184,19 +184,47 @@ sudo loginctl enable-linger "$USER"
 
 ## 🛠 Installation
 
+`pideploy` is a **single, self-contained Bash script** — no runtime, no package manager, no dependencies to compile. It runs on any Linux host with **Bash ≥ 4.4**. Pick one method:
+
+**Option A — one-line install (just the CLI):**
+
 ```bash
-git clone https://github.com/<you>/pideploy
+mkdir -p ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/Traves-Theberge/pideploy/main/pideploy -o ~/.local/bin/pideploy
+chmod +x ~/.local/bin/pideploy
+```
+
+**Option B — clone + installer (recommended; gets tests & docs too):**
+
+```bash
+git clone https://github.com/Traves-Theberge/pideploy
 cd pideploy
 ./install.sh          # symlinks ./pideploy -> ~/.local/bin/pideploy
 ```
 
-Or manually:
+**Option C — manual:**
 
 ```bash
 install -Dm755 pideploy ~/.local/bin/pideploy
 ```
 
-Make sure `~/.local/bin` is on your `PATH`. Then run `pideploy doctor`.
+Then make sure `~/.local/bin` is on your `PATH` (the installer warns if it isn't):
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+```
+
+**Verify and finish setup:**
+
+```bash
+pideploy version
+pideploy setup        # one-time host prep (linger + tailscale operator)
+pideploy doctor       # confirm every prerequisite is ok
+```
+
+> `pideploy` orchestrates Docker, Tailscale, and the GitHub CLI — see [Prerequisites & setup](#-prerequisites--setup) to install those once. `pideploy doctor` tells you exactly what's missing.
+
+To update later: re-run the one-liner (Option A) or `git pull` (Option B). To uninstall: `rm ~/.local/bin/pideploy` and `pideploy rm` in any repo whose runner you want removed.
 
 ---
 
