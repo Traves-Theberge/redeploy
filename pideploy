@@ -25,12 +25,16 @@ REPO_CONF=".pideploy.conf"
 FORMAT=text   # set to 'json' by --json
 
 # ── built-in defaults (overridable by config / repo / flags) ────────────────
+# Host-level settings live in ~/.config/pideploy/config (one config, many repos).
+# Generate a shareable placeholder with: pideploy config template
 declare -A CFG=(
+  [deploy_host]=""              # friendly name for this target host (e.g. my-pi)
+  [portainer_url]=""            # Portainer URL on this host (reference/links; deploy is via compose)
+  [runner_label]=pideploy       # label that routes GitHub Actions jobs to this host's runner
   [default_port]=8080
   [default_branch]=main
   [auto_serve]=false
   [prune_images]=true
-  [runner_label]=pideploy
   [node_version]=22
   [python_version]=3.12
   [go_version]=1.23
@@ -284,6 +288,8 @@ cmd_unserve() {
 
 cmd_status() {
   # gather ------------------------------------------------------------------
+  local dhost phost; dhost=$(cfg deploy_host); phost=$(cfg portainer_url)
+  [ -z "$dhost" ] && dhost=$(hostname 2>/dev/null || echo this-host)
   local rnames=() ractive=() snames=() sstatus=() sports=() serve_lines=() linger=false
   if [ -d "$RUNNERS_DIR" ] && compgen -G "$RUNNERS_DIR/*" >/dev/null; then
     local d s
@@ -306,10 +312,12 @@ cmd_status() {
     sep=""; for i in "${!snames[@]}"; do out+="$sep{\"name\":$(json_str "${snames[$i]}"),\"status\":$(json_str "${sstatus[$i]}"),\"ports\":$(json_str "${sports[$i]}")}"; sep=,; done
     out+='],"serve":['
     sep=""; for i in "${!serve_lines[@]}"; do out+="$sep$(json_str "${serve_lines[$i]}")"; sep=,; done
-    out+="],\"linger\":$(json_bool "$linger")}"
+    out+="],\"linger\":$(json_bool "$linger"),\"deploy_host\":$(json_str "$dhost"),\"portainer_url\":$(json_str "$phost")}"
     printf '%s\n' "$out"
   else
     local i
+    printf 'target\t%s\n' "$dhost"
+    [ -n "$phost" ] && printf 'portainer\t%s\n' "$phost"
     if [ ${#rnames[@]} -eq 0 ]; then printf 'runner\t(none)\n'; else
       for i in "${!rnames[@]}"; do printf 'runner\t%s\t%s\n' "${rnames[$i]}" "$([ "${ractive[$i]}" = true ] && echo active || echo inactive)"; done
     fi
@@ -352,6 +360,18 @@ cmd_env() { # sync local .env (source of truth) to a GitHub Actions secret
   else printf 'secret=%s\n' "$secret"; fi
 }
 
+cmd_onboard() { # clone a repo onto this host and run init (= add it to the pipeline)
+  local url="${1:-}"; [ -n "$url" ] || usage_err "usage: pideploy onboard <git-url|owner/repo> [init flags]"
+  shift
+  need git; need gh
+  local base="${PIDEPLOY_REPOS:-$HOME/pideploy-repos}"; mkdir -p "$base"
+  local name dest; name=$(basename "${url%.git}"); dest="$base/$name"
+  if [ -d "$dest/.git" ]; then log "repo present at $dest (pulling)"; git -C "$dest" pull -q --ff-only 2>/dev/null || true
+  else log "cloning $url -> $dest"
+       gh repo clone "$url" "$dest" -- -q 2>/dev/null || git clone -q "$url" "$dest" || die "clone failed: $url"; fi
+  ( cd "$dest" && cmd_init "$@" )
+}
+
 cmd_config() {
   local sub="${1:-list}"; shift || true
   case "$sub" in
@@ -367,8 +387,44 @@ cmd_config() {
     set) [ -n "${1:-}" ] && [ -n "${2:-}" ] || usage_err "usage: pideploy config set <key> <value>"
          CFG[$1]="$2"; config_save; log "set $1=$2" ;;
     edit) mkdir -p "$CONFIG_DIR"; [ -f "$CONFIG_FILE" ] || config_save; "${EDITOR:-nano}" "$CONFIG_FILE" ;;
-    *) usage_err "config: list | get <k> | set <k> <v> | edit" ;;
+    template) config_template ;;
+    path) printf '%s\n' "$CONFIG_FILE" ;;
+    *) usage_err "config: list | get <k> | set <k> <v> | edit | template | path" ;;
   esac
+}
+
+config_template() { # emit a shareable, placeholder host config (NO real values)
+  cat <<'TPL'
+# pideploy host config — copy to ~/.config/pideploy/config and fill in your values.
+# Scoped to THIS host; reused by every repo you onboard here.
+# SAFE TO SHARE only as this placeholder template — never commit real values.
+
+# A friendly name for this deploy target (shown in `pideploy status`).
+deploy_host=
+
+# Label that routes GitHub Actions jobs to THIS host's runner. Use a unique
+# value (e.g. my-pi) if more than one host serves the same repos.
+runner_label=pideploy
+
+# Portainer URL on this host (for reference/links in `pideploy status`).
+# Deploys run via `docker compose`; Portainer sees them on the shared engine.
+portainer_url=
+
+# Defaults applied to every repo you onboard (override per-repo in .pideploy.conf).
+default_port=8080
+default_branch=main
+auto_serve=false
+prune_images=true
+
+# Base image versions for scaffolded Dockerfiles.
+node_version=22
+python_version=3.12
+go_version=1.23
+
+# Optional: default GitHub Actions secret name a repo's .env is synced to.
+# Leave commented to keep it per-repo (set automatically when a .env exists).
+# dotenv_secret=PIDEPLOY_DOTENV
+TPL
 }
 
 cmd_rm() {
@@ -479,6 +535,8 @@ Result: containers run on the host's Docker engine (visible in Portainer);
 - `pideploy init [--port N] [--name NAME] [--serve] [--json]` — in a git repo with
   a GitHub remote: scaffold Dockerfile/compose/workflow + `.pideploy.conf`,
   register+start the runner, commit & push. Emits repo/app/port/runner/pushed.
+- `pideploy onboard <git-url|owner/repo> [init flags]` — clone the repo onto THIS
+  host then init it (registers the runner here so it deploys here). Run on the host.
 - `pideploy deploy [--json]` — trigger a deploy now.
 - `pideploy status [--json]` — runners, stacks, serve, linger.
 - `pideploy serve <port> [--json]` — expose a port; prints the https URL on stdout.
@@ -495,9 +553,14 @@ Global flags: `--json` (structured output), `--agent` (this manual), `--skill`
 (the skill), `--yes` (accepted, no-op).
 
 ## Config & precedence
-Flags > per-repo `.pideploy.conf` > global `$XDG_CONFIG_HOME/pideploy/config` > built-in.
-Keys: default_port, default_branch, auto_serve, prune_images, runner_label,
-node_version, python_version, go_version, app_name (repo-level).
+Flags > per-repo `.pideploy.conf` > HOST config `$XDG_CONFIG_HOME/pideploy/config` > built-in.
+The HOST config is global to this machine and reused by every repo onboarded here
+(one config, many repos). It lives OUTSIDE any repo, so it never leaks. Generate a
+shareable placeholder with `pideploy config template` (commit that, never the real one).
+Host keys: deploy_host, portainer_url, runner_label, default_port, default_branch,
+auto_serve, prune_images, node_version, python_version, go_version.
+Repo keys (.pideploy.conf): app_name, dotenv_secret.
+New host setup: `pideploy config template > ~/.config/pideploy/config` then edit.
 
 ## Files written into a repo by init
 - `Dockerfile` (only if missing; node/python/go/static autodetect).
@@ -621,20 +684,36 @@ USAGE   pideploy env [--name NAME]        # default secret: PIDEPLOY_DOTENV (or 
 OUTPUT  stdout: secret=<NAME> (or JSON {secret,repo}); stderr: progress.
 H
 ;;
-    config) cat <<'H'
-pideploy config — view or change defaults.
+    onboard) cat <<'H'
+pideploy onboard — clone a repo onto THIS host and init it in one step.
 
-Precedence (highest first): CLI flags > per-repo .pideploy.conf > global config
-(~/.config/pideploy/config) > built-in defaults.
+Run on the deploy host. Clones the repo into $PIDEPLOY_REPOS (default
+~/pideploy-repos/<name>), then runs `pideploy init` there — registering the
+runner on this host so the repo deploys here. Accepts all `init` flags.
+
+USAGE   pideploy onboard <git-url|owner/repo> [--port N] [--name NAME] [--serve] [--no-dotenv]
+EXAMPLE pideploy onboard me/my-api --port 3000
+H
+;;
+    config) cat <<'H'
+pideploy config — view or change settings. The HOST config is global
+(~/.config/pideploy/config) and is reused by every repo you onboard on this host.
+
+Precedence (highest first): CLI flags > per-repo .pideploy.conf > host config > built-in.
 
 USAGE
   pideploy config list [--json]      Show effective config.
   pideploy config get <key>          Print one value.
-  pideploy config set <key> <value>  Persist a global default.
-  pideploy config edit               Open the global config in $EDITOR.
+  pideploy config set <key> <value>  Persist a host default.
+  pideploy config edit               Open the host config in $EDITOR.
+  pideploy config template           Print a shareable placeholder host config (no real values).
+  pideploy config path               Print the host config file path.
 
-KEYS  default_port, default_branch, auto_serve, prune_images, runner_label,
-      node_version, python_version, go_version, app_name (per-repo).
+HOST KEYS  deploy_host, portainer_url, runner_label, default_port, default_branch,
+           auto_serve, prune_images, node_version, python_version, go_version.
+REPO KEYS  app_name, dotenv_secret (written to .pideploy.conf by init).
+
+SETUP (new host):  pideploy config template > ~/.config/pideploy/config  &&  pideploy config edit
 H
 ;;
     rm) cat <<'H'
@@ -706,6 +785,12 @@ sees them); `serve` exposes a port over Tailscale.
 Run `pideploy --agent` for the authoritative reference, and `pideploy help <command>`
 for any command's options. Do not guess flags — confirm with `help`.
 
+## Host config (one config, many repos)
+This host has a global config at `~/.config/pideploy/config` (deploy_host, runner_label,
+portainer_url, defaults). It is reused by every repo onboarded here and lives outside
+any repo, so it never leaks. New host: `pideploy config template > ~/.config/pideploy/config`
+then edit. NEVER commit a real host config or .env — only the placeholder template.
+
 ## Output contract (rely on this)
 - Data → STDOUT (`key=value`/rows, or JSON with `--json`). Parse stdout.
 - Progress/warnings/errors → STDERR (`pideploy:`/`warn:`/`error:`). With `--json`,
@@ -748,10 +833,11 @@ for any command's options. Do not guess flags — confirm with `help`.
 - deploys never trigger: check `gh auth status` includes `repo` + `workflow` scopes.
 
 ## Command quick reference
-`setup` host prep · `doctor` prereqs · `init` set up repo · `deploy` redeploy now ·
-`status` state · `serve`/`unserve` expose · `logs` tail · `config` defaults ·
-`env` sync .env→secret · `rm` remove runner · `agent` manual · `skill` this skill ·
-`help <cmd>` per-command help. Add `--json` to init/status/deploy/serve/config/doctor.
+`setup` host prep · `doctor` prereqs · `config template` host config · `init` set up repo ·
+`onboard <repo>` clone+init on host · `deploy` redeploy now · `status` state ·
+`serve`/`unserve` expose · `logs` tail · `config` defaults · `env` sync .env→secret ·
+`rm` remove runner · `agent` manual · `skill` this skill · `help <cmd>` per-command help.
+Add `--json` to init/status/deploy/serve/config/doctor.
 SKILL
 }
 
@@ -792,11 +878,12 @@ USAGE
 
 COMMANDS
   init [--port N] [--name NAME] [--serve]   set up the current repo to deploy on push
+  onboard <git-url|owner/repo>              clone a repo onto this host + init it (one step)
   deploy                                    trigger a deploy now (no code change needed)
   status                                    list runners, running stacks, serve, linger
   serve <port> | unserve <port>             expose / stop exposing a port (Tailscale HTTPS)
   logs [app]                                tail a deployed app's container logs
-  config list|get <k>|set <k> <v>|edit      view or change defaults
+  config list|get|set|edit|template|path    view/change defaults; 'template' prints a host-config example
   env [--name NAME]                         sync local .env -> GitHub Actions secret
   rm                                        remove this repo's runner
   setup                                     one-time host prep (linger, tailscale operator)
@@ -840,6 +927,7 @@ main() {
     logs)    cmd_logs    "${args[@]}";;
     config)  cmd_config  "${args[@]}";;
     env)     cmd_env     "${args[@]}";;
+    onboard) cmd_onboard "${args[@]}";;
     rm)      cmd_rm      "${args[@]}";;
     setup)   cmd_setup   "${args[@]}";;
     doctor)  cmd_doctor  "${args[@]}";;

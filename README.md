@@ -288,6 +288,8 @@ All data commands accept `--json`. Run `pideploy help <command>` for every optio
 | Command | What it does |
 |---------|--------------|
 | `pideploy init [--port N] [--name NAME] [--serve]` | Set up the current repo to deploy on push |
+| `pideploy onboard <owner/repo>` | Clone a repo onto this host + init it (one step) |
+| `pideploy config template` | Print a shareable placeholder host config |
 | `pideploy deploy` | Trigger a deploy now (workflow_dispatch, else empty commit) |
 | `pideploy status` | Runners, running stacks, Tailscale serve, linger |
 | `pideploy serve <port>` / `unserve <port>` | Expose / stop exposing a port over Tailscale HTTPS |
@@ -326,28 +328,38 @@ Apps usually need secrets (API keys, tokens). Because the runner builds in a **f
 
 ---
 
-## 🎛 Configuration
+## 🎛 Configuration — one host config, many repos
 
-Precedence (highest first): **CLI flags → per-repo `.pideploy.conf` → global config → built-in defaults.**
+`pideploy` has a **host config** at `~/.config/pideploy/config` that describes *this machine as a deploy target* — and it's **reused by every repo you onboard here.** It lives outside any repo, so it never leaks. Generate a shareable placeholder (the only host-config artifact that's safe to commit) and fill it in:
 
 ```bash
-pideploy config list                 # show effective config
-pideploy config set default_port 3000
-pideploy config get node_version
-pideploy config edit                 # open in $EDITOR
+pideploy config template > ~/.config/pideploy/config   # placeholders → your config
+pideploy config edit                                   # fill in your values
+pideploy config list                                   # show effective config
+pideploy config set default_port 3000                  # change a default
 ```
 
-| Key | Default | Meaning |
-|-----|---------|---------|
-| `default_port` | `8080` | Port the app binds (localhost) |
-| `default_branch` | `main` | Branch whose pushes deploy |
-| `auto_serve` | `false` | Run `serve` automatically after `init` |
-| `prune_images` | `true` | Prune dangling images after each deploy |
-| `runner_label` | `pideploy` | Label applied to runners |
-| `node_version` / `python_version` / `go_version` | `22` / `3.12` / `1.23` | Base image versions for scaffolded Dockerfiles |
-| `app_name` | _(repo name)_ | Per-repo: stack/container name (written to `.pideploy.conf`) |
+Precedence (highest first): **CLI flags → per-repo `.pideploy.conf` → host config → built-in defaults.**
 
-Global config lives at `~/.config/pideploy/config`; per-repo overrides at `.pideploy.conf` in the repo root.
+| Key | Scope | Default | Meaning |
+|-----|-------|---------|---------|
+| `deploy_host` | host | _(hostname)_ | Friendly name for this target (shown in `status`) |
+| `portainer_url` | host | — | Portainer URL on this host (reference/links) |
+| `runner_label` | host | `pideploy` | Label that routes Actions jobs to this host's runner |
+| `default_port` | host | `8080` | Port the app binds (localhost) |
+| `default_branch` | host | `main` | Branch whose pushes deploy |
+| `auto_serve` | host | `false` | Run `serve` automatically after `init` |
+| `prune_images` | host | `true` | Prune dangling images after each deploy |
+| `node_version` / `python_version` / `go_version` | host | `22` / `3.12` / `1.23` | Base image versions for scaffolded Dockerfiles |
+| `app_name` | repo | _(repo name)_ | Stack/container name (in `.pideploy.conf`) |
+| `dotenv_secret` | repo | `PIDEPLOY_DOTENV` | GitHub secret name `.env` is synced to (in `.pideploy.conf`) |
+
+**Onboard any repo to this host in one step:** `pideploy onboard <owner/repo> --port N` (run on the host — clones the repo and inits it, so it deploys here).
+
+### Open-source / leak safety
+- The **real host config never lives in a repo** — only `config.example` (placeholders) is committed.
+- `.pideploy.conf` is committed but **secret-free** (only the secret's *name*).
+- `.env` and any real config are gitignored; secrets reach the runner only via GitHub's **encrypted** secret store.
 
 ---
 

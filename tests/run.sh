@@ -93,6 +93,32 @@ assert_contains "config list shows key" "$($BIN config list)" "node_version"
 rm -f "$XDG_CONFIG_HOME/pideploy/config"   # reset for later tests
 
 # ════════════════════════════════════════════════════════════════════════════
+grp "Host config & onboarding"
+# config template — shareable placeholder, leak-safe (env values blank)
+TPL="$($BIN config template)"
+assert_contains "template: has runner_label"   "$TPL" "runner_label=pideploy"
+assert_contains "template: documents deploy_host" "$TPL" "deploy_host="
+assert_eq "template: deploy_host is blank (no real value)"  "$(printf '%s' "$TPL" | grep '^deploy_host=')"  "deploy_host="
+assert_eq "template: portainer_url is blank (no real value)" "$(printf '%s' "$TPL" | grep '^portainer_url=')" "portainer_url="
+# committed config.example must equal the generated template (and be leak-free)
+assert_eq "config.example matches template" "$(cat "$(dirname "$BIN")/config.example")" "$TPL"
+# config list/path expose host keys
+assert_contains "config list has deploy_host"  "$($BIN config list)" "deploy_host"
+assert_contains "config list has portainer_url" "$($BIN config list)" "portainer_url"
+assert_contains "config path points at host config" "$($BIN config path)" "pideploy/config"
+# status surfaces the deploy target
+assert_contains "status shows target host" "$($BIN status 2>&1)" "target"
+assert_struct   "status --json has host keys" "$($BIN status --json 2>/dev/null)" \
+  "'deploy_host' in d and 'portainer_url' in d"
+# onboard: usage + clone+init in one step
+assert_exit "onboard without arg → 2" "$BIN onboard" 2
+( git init -q --bare "$SBOX/onb.git"
+  OS="$SBOX/onb-src"; mkdir -p "$OS"; cd "$OS"; git init -q; git remote add origin "$SBOX/onb.git"
+  echo '{"name":"o","scripts":{"start":"true"}}' > package.json; git add -A; git commit -qm init; git branch -M main; git push -q -u origin main ) 2>/dev/null
+PIDEPLOY_REPOS="$SBOX/onboarded" $BIN onboard "file://$SBOX/onb.git" --port 8080 --no-dotenv >/dev/null 2>&1
+assert_ok   "onboard: cloned the repo onto the host" "[ -d '$SBOX/onboarded/onb/.git' ]"
+assert_file "onboard: ran init (scaffolded Dockerfile)" "$SBOX/onboarded/onb/Dockerfile"
+
 grp "CLI: surface"
 assert_contains "version"       "$($BIN version)" "pideploy 1.0.0"
 assert_contains "help commands" "$($BIN help)"    "init"

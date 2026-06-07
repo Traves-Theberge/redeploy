@@ -1,6 +1,14 @@
-# pideploy repo — keep it clean
+# pideploy repo — keep it clean & leak-free
 *.swp
 *.tmp
 *~
 .DS_Store
 /tmp/
+
+# never commit a real host config or secrets (only config.example is shared)
+/config
+pideploy.config
+*.local
+.env
+*.env
+!*.env.example

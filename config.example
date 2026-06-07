@@ -1,0 +1,29 @@
+# pideploy host config — copy to ~/.config/pideploy/config and fill in your values.
+# Scoped to THIS host; reused by every repo you onboard here.
+# SAFE TO SHARE only as this placeholder template — never commit real values.
+
+# A friendly name for this deploy target (shown in `pideploy status`).
+deploy_host=
+
+# Label that routes GitHub Actions jobs to THIS host's runner. Use a unique
+# value (e.g. my-pi) if more than one host serves the same repos.
+runner_label=pideploy
+
+# Portainer URL on this host (for reference/links in `pideploy status`).
+# Deploys run via `docker compose`; Portainer sees them on the shared engine.
+portainer_url=
+
+# Defaults applied to every repo you onboard (override per-repo in .pideploy.conf).
+default_port=8080
+default_branch=main
+auto_serve=false
+prune_images=true
+
+# Base image versions for scaffolded Dockerfiles.
+node_version=22
+python_version=3.12
+go_version=1.23
+
+# Optional: default GitHub Actions secret name a repo's .env is synced to.
+# Leave commented to keep it per-repo (set automatically when a .env exists).
+# dotenv_secret=PIDEPLOY_DOTENV

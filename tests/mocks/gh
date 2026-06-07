@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 a="$*"
 case "$a" in
+  *"repo clone"*)                        git clone -q "$3" "$4" 2>/dev/null ;;  # $3=url $4=dest
   *"repo view"*)                         echo "testuser/testrepo" ;;
   *"auth status"*)                        exit 0 ;;
   *"registration-token"*)                 echo "FAKE-REG-TOKEN" ;;
