@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+a="$*"
+case "$a" in
+  info)                 exit 0 ;;
+  *"compose up"*)       echo "[mock] docker compose up -d --build" ;;
+  *"image prune"*)      echo "[mock] pruned" ;;
+  *".Status"*)          printf 'myapp|Up 2 seconds|127.0.0.1:8080->8080/tcp\n' ;;  # status format
+  *"ps"*)               printf 'myapp\n' ;;                                          # names only (logs)
+  *"logs"*)             echo "[mock] log line" ;;
+  *)                    : ;;
+esac

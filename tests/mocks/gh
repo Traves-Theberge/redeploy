@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+a="$*"
+case "$a" in
+  *"repo view"*)                         echo "testuser/testrepo" ;;
+  *"auth status"*)                        exit 0 ;;
+  *"registration-token"*)                 echo "FAKE-REG-TOKEN" ;;
+  *"remove-token"*)                       echo "FAKE-REM-TOKEN" ;;
+  *"actions/runners"*)                    : ;;            # no existing runners
+  *"releases/latest"*)                    echo "v2.334.0" ;;
+  *"workflow run"*)                       exit 0 ;;
+  *)                                      exit 0 ;;
+esac

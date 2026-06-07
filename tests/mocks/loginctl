@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+a="$*"
+case "$a" in
+  *"Linger --value"*)  echo "${MOCK_LINGER:-yes}" ;;
+  *"-p Linger"*)       echo "Linger=${MOCK_LINGER:-yes}" ;;
+  *)                   : ;;
+esac

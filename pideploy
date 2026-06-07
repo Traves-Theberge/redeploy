@@ -1,0 +1,743 @@
+#!/usr/bin/env bash
+# pideploy — deploy any git repo to this host on push; visible in Portainer,
+# reachable over Tailscale. Plain, non-interactive, scriptable CLI.
+#
+# Output contract (stable, for scripts & AI agents):
+#   - Primary data goes to STDOUT (plain `key=value`/tabular, or JSON with --json).
+#   - Progress, warnings, errors go to STDERR, prefixed `pideploy:` / `warn:` / `error:`.
+#   - Exit codes: 0 success · 1 runtime error · 2 usage error.
+#   - Never prompts. Reads no interactive input.
+# Full manual for agents:  pideploy --agent
+set -euo pipefail
+
+PIDEPLOY_VERSION="1.0.0"
+
+# ── paths ───────────────────────────────────────────────────────────────────
+PIDEPLOY_HOME="${PIDEPLOY_HOME:-$HOME/.pideploy}"
+TEMPLATE_DIR="$PIDEPLOY_HOME/runner-template"
+RUNNERS_DIR="$PIDEPLOY_HOME/runners"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pideploy"
+CONFIG_FILE="$CONFIG_DIR/config"
+UNIT_DIR="$HOME/.config/systemd/user"
+UNIT_NAME="pideploy-runner@.service"
+REPO_CONF=".pideploy.conf"
+
+FORMAT=text   # set to 'json' by --json
+
+# ── built-in defaults (overridable by config / repo / flags) ────────────────
+declare -A CFG=(
+  [default_port]=8080
+  [default_branch]=main
+  [auto_serve]=false
+  [prune_images]=true
+  [runner_label]=pideploy
+  [node_version]=22
+  [python_version]=3.12
+  [go_version]=1.23
+)
+
+# ── logging (all to stderr; stdout is reserved for data) ────────────────────
+# Errors are format-aware: plain `error: msg` in text mode, a JSON object in
+# --json mode — always to stderr, with a stable exit code.
+log()  { printf 'pideploy: %s\n' "$*" >&2; }
+warn() { printf 'warn: %s\n'     "$*" >&2; }
+emit_err() { # msg [code]
+  if [ "$FORMAT" = json ]; then printf '{"error":%s,"code":%s}\n' "$(json_str "$1")" "${2:-1}" >&2
+  else printf 'error: %s\n' "$1" >&2; fi
+}
+err()  { emit_err "$*" 1; }
+die()  { emit_err "$1" "${2:-1}"; exit "${2:-1}"; }
+usage_err() { emit_err "$1" 2; exit 2; }
+
+# ── json helpers ─────────────────────────────────────────────────────────────
+json_str()  { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\n'/\\n}; s=${s//$'\t'/\\t}; s=${s//$'\r'/}; printf '"%s"' "$s"; }
+json_bool() { [ "$1" = true ] && printf 'true' || printf 'false'; }
+
+# ── config ──────────────────────────────────────────────────────────────────
+_read_conf() { # merge key=value pairs from a file into CFG (set -e safe)
+  [ -f "$1" ] || return 0
+  local k v
+  while IFS='=' read -r k v; do
+    [[ "$k" =~ ^[a-z_]+$ ]] && CFG[$k]="$v"
+  done < "$1" || true
+  return 0
+}
+load_config() {
+  _read_conf "$CONFIG_FILE"
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    local root; root=$(git rev-parse --show-toplevel)
+    _read_conf "$root/$REPO_CONF"
+  fi
+  return 0
+}
+cfg() { printf '%s' "${CFG[$1]:-}"; }
+config_save() {
+  mkdir -p "$CONFIG_DIR"; : > "$CONFIG_FILE"
+  local k; for k in "${!CFG[@]}"; do printf '%s=%s\n' "$k" "${CFG[$k]}"; done | sort >> "$CONFIG_FILE"
+}
+
+# ── helpers ─────────────────────────────────────────────────────────────────
+need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1 (run: pideploy doctor)"; }
+repo_slug() { echo "$1" | tr '[:upper:]/' '[:lower:]-' | sed 's/[^a-z0-9-]/-/g'; }
+resolve_repo() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not inside a git repo"
+  gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null \
+    || die "no GitHub remote (create one: gh repo create --source=. --private --push)"
+}
+tailnet_host() { tailscale status --json 2>/dev/null | grep -o '"DNSName":"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/\.$//'; }
+linger_on() { [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" = yes ]; }
+
+ensure_template() {
+  [ -x "$TEMPLATE_DIR/config.sh" ] && return
+  mkdir -p "$TEMPLATE_DIR"
+  if [ -x "$HOME/actions-runner/config.sh" ]; then
+    cp -a "$HOME/actions-runner/." "$TEMPLATE_DIR/"
+    rm -rf "$TEMPLATE_DIR/_work" "$TEMPLATE_DIR/.runner" "$TEMPLATE_DIR"/.credentials* 2>/dev/null || true
+  else
+    local ver arch; ver=$(gh api repos/actions/runner/releases/latest -q .tag_name | sed 's/^v//')
+    case "$(uname -m)" in aarch64|arm64) arch=arm64;; x86_64) arch=x64;; *) die "unsupported arch $(uname -m)";; esac
+    log "downloading actions runner v$ver ($arch)"
+    curl -fsSL -o /tmp/pd-runner.tgz \
+      "https://github.com/actions/runner/releases/download/v${ver}/actions-runner-linux-${arch}-${ver}.tar.gz"
+    tar xzf /tmp/pd-runner.tgz -C "$TEMPLATE_DIR"; rm -f /tmp/pd-runner.tgz
+  fi
+}
+install_unit() {
+  mkdir -p "$UNIT_DIR"
+  cat > "$UNIT_DIR/$UNIT_NAME" <<'UNIT'
+[Unit]
+Description=pideploy GitHub Actions runner (%i)
+After=network-online.target docker.service
+Wants=network-online.target
+[Service]
+Type=simple
+WorkingDirectory=%h/.pideploy/runners/%i
+ExecStart=%h/.pideploy/runners/%i/run.sh
+Restart=always
+RestartSec=5
+KillMode=process
+[Install]
+WantedBy=default.target
+UNIT
+  systemctl --user daemon-reload
+}
+detect_dockerfile() {
+  local nv pv gv; nv=$(cfg node_version); pv=$(cfg python_version); gv=$(cfg go_version)
+  if   [ -f package.json ]; then printf 'FROM node:%s-slim\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci --omit=dev || npm install --omit=dev\nCOPY . .\nEXPOSE %s\nCMD ["npm","start"]\n' "$nv" "$(cfg default_port)"
+  elif [ -f pyproject.toml ] || [ -f requirements.txt ]; then printf 'FROM python:%s-slim\nWORKDIR /app\nCOPY requirements.txt* pyproject.toml* ./\nRUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || pip install --no-cache-dir . 2>/dev/null || true\nCOPY . .\nEXPOSE %s\nCMD ["python","app.py"]\n' "$pv" "$(cfg default_port)"
+  elif [ -f go.mod ]; then printf 'FROM golang:%s AS build\nWORKDIR /src\nCOPY . .\nRUN CGO_ENABLED=0 go build -o /app ./...\nFROM gcr.io/distroless/static\nCOPY --from=build /app /app\nEXPOSE %s\nENTRYPOINT ["/app"]\n' "$gv" "$(cfg default_port)"
+  else printf '# TODO: customise for your stack. Serves ./public via nginx by default.\nFROM nginx:alpine\nCOPY public/ /usr/share/nginx/html/\nEXPOSE 80\n'
+  fi
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# commands
+# ════════════════════════════════════════════════════════════════════════════
+
+cmd_init() {
+  local port="" name="" do_serve; do_serve=$(cfg auto_serve)
+  while [ $# -gt 0 ]; do case "$1" in
+    --port) port="$2"; shift 2;; --name) name="$2"; shift 2;;
+    --serve) do_serve=true; shift;; --no-serve) do_serve=false; shift;;
+    *) usage_err "init: unknown flag: $1";; esac; done
+  need git; need gh; need docker
+  local nwo slug app branch; nwo=$(resolve_repo); slug=$(repo_slug "$nwo")
+  app="${name:-$(cfg app_name)}"; app="${app:-${nwo##*/}}"
+  branch=$(cfg default_branch); : "${port:=$(cfg default_port)}"
+  log "repo=$nwo app=$app port=$port branch=$branch runner=pi-$slug"
+
+  # scaffold ----------------------------------------------------------------
+  local files=()
+  if [ -f Dockerfile ]; then log "kept existing Dockerfile"; else detect_dockerfile > Dockerfile; log "wrote Dockerfile"; fi
+  files+=(Dockerfile)
+  if [ -f docker-compose.yml ] || [ -f compose.yaml ]; then log "kept existing compose file"; else
+    cat > docker-compose.yml <<YML
+name: $app
+services:
+  $app:
+    build: .
+    container_name: $app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${port}:${port}"
+YML
+    log "wrote docker-compose.yml"
+  fi
+  files+=(docker-compose.yml)
+  mkdir -p .github/workflows
+  cat > .github/workflows/deploy.yml <<YML
+name: deploy
+# SAFETY: only push to your branch + manual dispatch. Do NOT add pull_request —
+# on a public repo that lets a fork run code on your self-hosted runner.
+on:
+  push: { branches: [$branch] }
+  workflow_dispatch:
+concurrency: { group: deploy-\${{ github.ref }}, cancel-in-progress: true }
+jobs:
+  deploy:
+    runs-on: [self-hosted, $(cfg runner_label)]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up -d --build --remove-orphans
+$( [ "$(cfg prune_images)" = true ] && printf '      - run: docker image prune -f' )
+YML
+  files+=(.github/workflows/deploy.yml)
+  log "wrote .github/workflows/deploy.yml"
+  cat > "$REPO_CONF" <<CONF
+# pideploy per-repo config — safe to commit (NO secrets here).
+app_name=$app
+default_port=$port
+default_branch=$branch
+CONF
+  files+=("$REPO_CONF")
+  log "wrote $REPO_CONF"
+  if ! { [ -f .gitignore ] && grep -qE '^\.env$|^\*\.env$|^\.env\*' .gitignore; }; then
+    printf '\n# pideploy: never commit secrets\n.env\n*.env\n!*.env.example\n' >> .gitignore
+    log "updated .gitignore (.env protected)"
+  fi
+
+  # runner ------------------------------------------------------------------
+  ensure_template; install_unit
+  local registered=false
+  if systemctl --user is-active --quiet "pideploy-runner@$slug" >/dev/null 2>&1 \
+     || gh api "repos/$nwo/actions/runners" -q '.runners[].name' 2>/dev/null | grep -qx "pi-$slug"; then
+    log "runner pi-$slug already registered"
+  else
+    local rdir="$RUNNERS_DIR/$slug" token
+    rm -rf "$rdir"; mkdir -p "$rdir"; cp -a "$TEMPLATE_DIR/." "$rdir/"
+    token=$(gh api -X POST "repos/$nwo/actions/runners/registration-token" -q .token) || die "registration token failed (need gh 'repo' scope)"
+    ( cd "$rdir" && ./config.sh --unattended --replace --url "https://github.com/$nwo" \
+        --token "$token" --name "pi-$slug" --labels "$(cfg runner_label)" --work _work >/dev/null )
+    systemctl --user enable --now "pideploy-runner@$slug"
+    registered=true
+    log "runner pi-$slug installed and started"
+  fi
+  linger_on || warn "linger is OFF; runners stop on logout/reboot (fix: sudo loginctl enable-linger $USER)"
+
+  # publish -----------------------------------------------------------------
+  local f to_add=() pushed=false
+  for f in Dockerfile docker-compose.yml compose.yaml .github/workflows/deploy.yml "$REPO_CONF" .gitignore; do
+    [ -e "$f" ] && to_add+=("$f")
+  done
+  [ ${#to_add[@]} -gt 0 ] && git add "${to_add[@]}" 2>/dev/null || true
+  if git diff --cached --quiet 2>/dev/null; then
+    log "no changes to commit"
+  else
+    git commit -q -m "Add pideploy: build & deploy on push"
+    if git push -q 2>/dev/null; then pushed=true; log "pushed (first deploy starting)"; else warn "committed but push failed; run: git push"; fi
+  fi
+
+  # result on stdout --------------------------------------------------------
+  if [ "$FORMAT" = json ]; then
+    local jf="" sep=""
+    for f in "${files[@]}"; do jf+="$sep$(json_str "$f")"; sep=,; done
+    printf '{"repo":%s,"app":%s,"port":%s,"branch":%s,"runner":%s,"runner_registered":%s,"pushed":%s,"files":[%s]}\n' \
+      "$(json_str "$nwo")" "$(json_str "$app")" "$port" "$(json_str "$branch")" \
+      "$(json_str "pi-$slug")" "$(json_bool "$registered")" "$(json_bool "$pushed")" "$jf"
+  else
+    printf 'repo=%s\napp=%s\nport=%s\nbranch=%s\nrunner=pi-%s\nrunner_registered=%s\npushed=%s\n' \
+      "$nwo" "$app" "$port" "$branch" "$slug" "$registered" "$pushed"
+  fi
+  [ "$do_serve" = true ] && cmd_serve "$port"
+  return 0
+}
+
+cmd_serve() {
+  local port="${1:-}"; [ -n "$port" ] || usage_err "usage: pideploy serve <port>"
+  need tailscale
+  log "exposing 127.0.0.1:$port over Tailscale (HTTPS)"
+  if tailscale serve --bg --https=443 "$port" 2>/tmp/pd.err || sudo -n tailscale serve --bg --https=443 "$port" 2>>/tmp/pd.err; then
+    local h url; h=$(tailnet_host); url="https://${h:-localhost}/"
+    if [ "$FORMAT" = json ]; then printf '{"url":%s,"port":%s}\n' "$(json_str "$url")" "$port"; else printf '%s\n' "$url"; fi
+  else
+    local detail; detail=$(tr '\n' ' ' < /tmp/pd.err | sed 's/  */ /g; s/^ *//; s/ *$//')
+    warn "if access denied, run once: sudo tailscale set --operator=$USER"
+    emit_err "serve failed: ${detail:-unknown}" 1
+    return 1
+  fi
+}
+
+cmd_unserve() {
+  local port="${1:-}"; [ -n "$port" ] || usage_err "usage: pideploy unserve <port>"
+  tailscale serve --https=443 off 2>/dev/null || sudo -n tailscale serve --https=443 off 2>/dev/null || true
+  log "stopped serving (port $port)"
+}
+
+cmd_status() {
+  # gather ------------------------------------------------------------------
+  local rnames=() ractive=() snames=() sstatus=() sports=() serve_lines=() linger=false
+  if [ -d "$RUNNERS_DIR" ] && compgen -G "$RUNNERS_DIR/*" >/dev/null; then
+    local d s
+    for d in "$RUNNERS_DIR"/*/; do s=$(basename "$d"); rnames+=("$s")
+      if systemctl --user is-active --quiet "pideploy-runner@$s" >/dev/null 2>&1; then ractive+=(true); else ractive+=(false); fi
+    done
+  fi
+  local line
+  while IFS='|' read -r n st pt; do [ -n "$n" ] || continue; snames+=("$n"); sstatus+=("$st"); sports+=("$pt"); done \
+    < <(docker ps --format '{{.Names}}|{{.Status}}|{{.Ports}}' 2>/dev/null || true)
+  while IFS= read -r line; do [ -n "$line" ] && serve_lines+=("$line"); done \
+    < <(tailscale serve status 2>/dev/null | grep -E '^https://' || true)
+  linger_on && linger=true
+
+  # emit --------------------------------------------------------------------
+  if [ "$FORMAT" = json ]; then
+    local i sep out='{"runners":['
+    sep=""; for i in "${!rnames[@]}"; do out+="$sep{\"name\":$(json_str "${rnames[$i]}"),\"active\":$(json_bool "${ractive[$i]}")}"; sep=,; done
+    out+='],"stacks":['
+    sep=""; for i in "${!snames[@]}"; do out+="$sep{\"name\":$(json_str "${snames[$i]}"),\"status\":$(json_str "${sstatus[$i]}"),\"ports\":$(json_str "${sports[$i]}")}"; sep=,; done
+    out+='],"serve":['
+    sep=""; for i in "${!serve_lines[@]}"; do out+="$sep$(json_str "${serve_lines[$i]}")"; sep=,; done
+    out+="],\"linger\":$(json_bool "$linger")}"
+    printf '%s\n' "$out"
+  else
+    local i
+    if [ ${#rnames[@]} -eq 0 ]; then printf 'runner\t(none)\n'; else
+      for i in "${!rnames[@]}"; do printf 'runner\t%s\t%s\n' "${rnames[$i]}" "$([ "${ractive[$i]}" = true ] && echo active || echo inactive)"; done
+    fi
+    for i in "${!snames[@]}"; do printf 'stack\t%s\t%s\t%s\n' "${snames[$i]}" "${sstatus[$i]}" "${sports[$i]}"; done
+    for i in "${!serve_lines[@]}"; do printf 'serve\t%s\n' "${serve_lines[$i]}"; done
+    printf 'linger\t%s\n' "$([ "$linger" = true ] && echo enabled || echo disabled)"
+  fi
+}
+
+cmd_logs() {
+  local app="${1:-}"
+  [ -z "$app" ] && app=$(docker ps --format '{{.Names}}' | head -1)
+  [ -z "$app" ] && die "no running containers"
+  exec docker logs -f --tail 100 "$app"
+}
+
+cmd_deploy() {
+  local nwo; nwo=$(resolve_repo)
+  if gh workflow run deploy.yml 2>/dev/null; then
+    log "deploy dispatched for $nwo"
+    [ "$FORMAT" = json ] && printf '{"dispatched":true,"repo":%s}\n' "$(json_str "$nwo")" || printf 'dispatched=true\n'
+  else
+    warn "workflow_dispatch failed; pushing empty commit"
+    git commit -q --allow-empty -m "pideploy: trigger deploy" && git push -q
+    log "pushed empty commit"
+    [ "$FORMAT" = json ] && printf '{"dispatched":true,"method":"push","repo":%s}\n' "$(json_str "$nwo")" || printf 'dispatched=true\n'
+  fi
+}
+
+cmd_config() {
+  local sub="${1:-list}"; shift || true
+  case "$sub" in
+    list|"")
+      if [ "$FORMAT" = json ]; then
+        local k sep out='{'; sep=""
+        for k in $(printf '%s\n' "${!CFG[@]}" | sort); do out+="$sep$(json_str "$k"):$(json_str "${CFG[$k]}")"; sep=,; done
+        printf '%s}\n' "$out"
+      else
+        local k; for k in $(printf '%s\n' "${!CFG[@]}" | sort); do printf '%s=%s\n' "$k" "${CFG[$k]}"; done
+      fi ;;
+    get) [ -n "${1:-}" ] || usage_err "usage: pideploy config get <key>"; printf '%s\n' "$(cfg "$1")" ;;
+    set) [ -n "${1:-}" ] && [ -n "${2:-}" ] || usage_err "usage: pideploy config set <key> <value>"
+         CFG[$1]="$2"; config_save; log "set $1=$2" ;;
+    edit) mkdir -p "$CONFIG_DIR"; [ -f "$CONFIG_FILE" ] || config_save; "${EDITOR:-nano}" "$CONFIG_FILE" ;;
+    *) usage_err "config: list | get <k> | set <k> <v> | edit" ;;
+  esac
+}
+
+cmd_rm() {
+  local nwo slug; nwo=$(resolve_repo); slug=$(repo_slug "$nwo")
+  systemctl --user disable --now "pideploy-runner@$slug" 2>/dev/null || true
+  local rdir="$RUNNERS_DIR/$slug" token
+  if [ -x "$rdir/config.sh" ]; then
+    token=$(gh api -X POST "repos/$nwo/actions/runners/remove-token" -q .token 2>/dev/null || true)
+    [ -n "$token" ] && ( cd "$rdir" && ./config.sh remove --token "$token" >/dev/null 2>&1 || true )
+  fi
+  rm -rf "$rdir"
+  log "removed runner pi-$slug (workflow file kept in repo)"
+  printf 'removed=pi-%s\n' "$slug"
+}
+
+cmd_setup() {
+  log "one-time host prep (idempotent)"
+  if linger_on; then log "linger: already enabled"
+  elif sudo -n loginctl enable-linger "$USER" 2>/dev/null; then log "linger: enabled"
+  else warn "linger: run manually -> sudo loginctl enable-linger $USER"; fi
+  if sudo -n tailscale set --operator="$USER" 2>/dev/null; then log "tailscale operator: set to $USER"
+  else warn "tailscale operator: run manually -> sudo tailscale set --operator=$USER"; fi
+  log "now run: pideploy doctor"
+}
+
+cmd_doctor() {
+  local names=() oks=() sev=() allok=true
+  add() { names+=("$1"); oks+=("$2"); sev+=("${3:-fatal}")
+          [ "$2" = true ] || { [ "${3:-fatal}" = fatal ] && allok=false; }; return 0; }
+  local b; for b in git gh docker curl tar systemctl loginctl tailscale; do
+    command -v "$b" >/dev/null 2>&1 && add "$b" true || add "$b" false
+  done
+  gh auth status >/dev/null 2>&1 && add gh-auth true || add gh-auth false
+  id -nG | tr ' ' '\n' | grep -qx docker && add docker-group true || add docker-group false
+  systemctl --user is-system-running >/dev/null 2>&1 && add user-systemd true || add user-systemd false
+  docker info >/dev/null 2>&1 && add docker-engine true || add docker-engine false
+  command -v tailscale >/dev/null 2>&1 && { tailscale status >/dev/null 2>&1 && add tailscale-up true || add tailscale-up false warn; }
+  linger_on && add linger true || add linger false warn
+
+  local i
+  if [ "$FORMAT" = json ]; then
+    local sep out='{"checks":['
+    sep=""; for i in "${!names[@]}"; do out+="$sep{\"name\":$(json_str "${names[$i]}"),\"ok\":$(json_bool "${oks[$i]}"),\"severity\":$(json_str "${sev[$i]}")}"; sep=,; done
+    out+="],\"ok\":$(json_bool "$allok")}"; printf '%s\n' "$out"
+  else
+    for i in "${!names[@]}"; do
+      if [ "${oks[$i]}" = true ]; then printf '%-16s ok\n' "${names[$i]}"
+      elif [ "${sev[$i]}" = warn ]; then printf '%-16s WARN\n' "${names[$i]}"
+      else printf '%-16s FAIL\n' "${names[$i]}"; fi
+    done
+  fi
+  [ "$allok" = true ] || return 1
+}
+
+# ── agent manual ─────────────────────────────────────────────────────────────
+cmd_agent() {
+  cat <<'AGENT'
+# pideploy — Agent Operating Manual
+
+Deploys any git repo to this host: on every push, a self-hosted GitHub Actions
+runner builds the repo's Docker image and runs it via docker compose. Containers
+appear in Portainer (same Docker engine) and can be exposed on the tailnet over
+HTTPS. This CLI is plain and non-interactive.
+
+## Output contract
+- Primary data -> STDOUT. Plain `key=value` or tab-separated rows; add `--json`
+  for structured JSON on: init, status, deploy, serve, config, doctor.
+- Progress/warnings/errors -> STDERR (`pideploy:` / `warn:` / `error:`).
+- Exit codes: 0 ok · 1 runtime error · 2 usage error.
+- Never prompts; reads no stdin. Safe to run unattended.
+
+## Architecture
+- One self-hosted runner per repo, as user systemd service
+  `pideploy-runner@<owner-repo>` (no root; needs `loginctl enable-linger` once).
+- Runner connects OUTBOUND to GitHub, so the host needs no inbound ports and
+  works tailnet-only. GitHub webhooks cannot reach it — do not use them.
+- Deploys run `docker compose up -d --build`; Portainer shares the Docker engine.
+- Exposure: `tailscale serve --https=443 <port>`; apps bind 127.0.0.1 only.
+
+## Prerequisites (verify: `pideploy doctor`, or `pideploy doctor --json`)
+- gh authenticated, scopes `repo` + `workflow`.
+- user in `docker` group; user systemd running; docker engine reachable.
+- `sudo loginctl enable-linger $USER` (persist runners) — or run `pideploy setup`.
+- tailscale up; `sudo tailscale set --operator=$USER` (serve without sudo).
+
+## Commands
+- `pideploy setup` — best-effort one-time host prep (linger, tailscale operator).
+- `pideploy doctor [--json]` — prerequisite check; exit 1 if any fatal check fails.
+- `pideploy init [--port N] [--name NAME] [--serve] [--json]` — in a git repo with
+  a GitHub remote: scaffold Dockerfile/compose/workflow + `.pideploy.conf`,
+  register+start the runner, commit & push. Emits repo/app/port/runner/pushed.
+- `pideploy deploy [--json]` — trigger a deploy now.
+- `pideploy status [--json]` — runners, stacks, serve, linger.
+- `pideploy serve <port> [--json]` — expose a port; prints the https URL on stdout.
+- `pideploy unserve <port>` — stop exposing.
+- `pideploy logs [app]` — exec `docker logs -f` (stdout passthrough).
+- `pideploy config [list|get <k>|set <k> <v>|edit] [--json]` — manage defaults.
+- `pideploy rm` — deregister this repo's runner.
+- `pideploy version` · `pideploy help` · `pideploy --agent`.
+
+Global flags: `--json` (structured output), `--agent` (print this), `--yes` (accepted, no-op).
+
+## Config & precedence
+Flags > per-repo `.pideploy.conf` > global `$XDG_CONFIG_HOME/pideploy/config` > built-in.
+Keys: default_port, default_branch, auto_serve, prune_images, runner_label,
+node_version, python_version, go_version, app_name (repo-level).
+
+## Files written into a repo by init
+- `Dockerfile` (only if missing; node/python/go/static autodetect).
+- `docker-compose.yml` (build: ., binds 127.0.0.1:<port>, top-level name:=stack).
+- `.github/workflows/deploy.yml` (runs-on [self-hosted, <label>]; push + dispatch only).
+- `.pideploy.conf` (port/name/branch; safe to commit, no secrets).
+- appends `.env` to `.gitignore`.
+
+## Agent quickstart (deploy a repo end-to-end)
+1. cd <repo>  (needs GitHub remote; else: gh repo create --source=. --private --push)
+2. pideploy doctor --json    # ensure "ok":true; if not, pideploy setup
+3. pideploy init --port <app-port> --json
+4. pideploy status --json    # confirm runner active and a stack is up
+5. pideploy serve <app-port> # stdout is the https URL
+Redeploy after changes: git push   (or: pideploy deploy)
+
+## Troubleshooting
+- runner inactive: systemctl --user status pideploy-runner@<owner-repo>; enable linger.
+- unreachable app: ensure it listens on <port> and compose maps 127.0.0.1:<port>:<port>.
+- serve "access denied": sudo tailscale set --operator=$USER.
+- no remote / push rejected: gh repo create first; check gh scopes repo+workflow.
+AGENT
+}
+
+# ── per-command help (rich, AI-readable) ─────────────────────────────────────
+cmd_help() {
+  local c="${1:-}"
+  case "$c" in
+    "") usage; return 0;;
+    init) cat <<'H'
+pideploy init — set up the current git repo to deploy on every push.
+
+Run inside a git repo that has a GitHub remote. Idempotent: re-running keeps
+existing files and skips runner registration. Scaffolds Dockerfile (if missing),
+docker-compose.yml, .github/workflows/deploy.yml, and .pideploy.conf; registers a
+per-repo self-hosted runner as a user systemd service; commits and pushes (which
+triggers the first deploy).
+
+USAGE
+  pideploy init [--port N] [--name NAME] [--serve|--no-serve] [--json]
+
+OPTIONS
+  --port N      Container port to bind on 127.0.0.1 and EXPOSE (default: config default_port=8080).
+  --name NAME   App / Docker-compose stack / container name (default: .pideploy.conf app_name, else repo name).
+  --serve       After deploy, expose the port over Tailscale HTTPS immediately.
+  --no-serve    Do not expose (overrides config auto_serve).
+  --json        Emit the result object {repo,app,port,branch,runner,runner_registered,pushed,files}.
+
+OUTPUT
+  stdout: key=value result (or JSON). stderr: progress (pideploy: ...).
+EXAMPLES
+  pideploy init --port 3000
+  pideploy init --name api --serve --json
+H
+;;
+    deploy) cat <<'H'
+pideploy deploy — trigger a deploy of the current repo now (without code changes).
+
+Dispatches the deploy workflow via the GitHub API; if that fails, pushes an empty
+commit instead. Run inside the repo.
+
+USAGE   pideploy deploy [--json]
+OUTPUT  stdout: dispatched=true (or JSON {dispatched,repo}). stderr: progress.
+H
+;;
+    status) cat <<'H'
+pideploy status — show the deploy state on this host.
+
+USAGE   pideploy status [--json]
+OUTPUT (text, tab-separated rows on stdout):
+  runner <name> <active|inactive>     one row per registered repo runner
+  stack  <name> <status> <ports>      one row per running container
+  serve  <url>                        each Tailscale HTTPS proxy
+  linger <enabled|disabled>           whether user services persist across reboot
+  --json: {runners:[{name,active}], stacks:[{name,status,ports}], serve:[..], linger:bool}
+H
+;;
+    serve) cat <<'H'
+pideploy serve — expose a local port over Tailscale with HTTPS (tailnet-only).
+
+Apps bind 127.0.0.1; this fronts them with a real TLS cert reachable from your
+tailnet (and nowhere else).
+
+USAGE   pideploy serve <port> [--json]
+OUTPUT  stdout: the https URL (or JSON {url,port}). stderr: progress.
+NOTE    Needs Tailscale HTTPS enabled + `sudo tailscale set --operator=$USER` (see: pideploy setup).
+H
+;;
+    unserve) cat <<'H'
+pideploy unserve — stop exposing a port over Tailscale.
+USAGE   pideploy unserve <port>
+H
+;;
+    logs) cat <<'H'
+pideploy logs — tail a deployed app's container logs (follows; Ctrl-C to stop).
+USAGE   pideploy logs [app]      # app defaults to the first running container
+H
+;;
+    config) cat <<'H'
+pideploy config — view or change defaults.
+
+Precedence (highest first): CLI flags > per-repo .pideploy.conf > global config
+(~/.config/pideploy/config) > built-in defaults.
+
+USAGE
+  pideploy config list [--json]      Show effective config.
+  pideploy config get <key>          Print one value.
+  pideploy config set <key> <value>  Persist a global default.
+  pideploy config edit               Open the global config in $EDITOR.
+
+KEYS  default_port, default_branch, auto_serve, prune_images, runner_label,
+      node_version, python_version, go_version, app_name (per-repo).
+H
+;;
+    rm) cat <<'H'
+pideploy rm — deregister this repo's self-hosted runner and remove its service.
+Leaves the workflow file in the repo. Re-run `pideploy init` to recreate.
+USAGE   pideploy rm
+H
+;;
+    setup) cat <<'H'
+pideploy setup — best-effort one-time host preparation (idempotent).
+Enables systemd linger (so runners survive reboot) and sets the Tailscale
+operator (so serve needs no sudo). Prints manual commands for anything it
+cannot do without a password. Then run `pideploy doctor`.
+USAGE   pideploy setup
+H
+;;
+    doctor) cat <<'H'
+pideploy doctor — check every prerequisite; exit 1 if any FATAL check fails.
+
+Checks binaries (git, gh, docker, curl, tar, systemctl, loginctl, tailscale),
+gh auth, docker group membership, user systemd, docker engine, tailscale up,
+and linger. tailscale-up and linger are WARN (non-fatal).
+
+USAGE   pideploy doctor [--json]
+OUTPUT  text: "<check> ok|WARN|FAIL"; --json: {checks:[{name,ok,severity}], ok}
+H
+;;
+    agent) cat <<'H'
+pideploy agent — print the full operating manual for AI agents (also: --agent).
+USAGE   pideploy agent
+H
+;;
+    skill) cat <<'H'
+pideploy skill — print a Claude Code skill (markdown w/ frontmatter) teaching an
+agent to use this CLI: directives, rules, workflow, troubleshooting. Also: --skill.
+Save it to .claude/skills/pideploy/SKILL.md to install.
+USAGE   pideploy skill > .claude/skills/pideploy/SKILL.md
+H
+;;
+    *) usage_err "no help for command: $c";;
+  esac
+}
+
+# ── skill (Claude Code skill document) ───────────────────────────────────────
+cmd_skill() {
+  cat <<'SKILL'
+---
+name: pideploy
+description: Use when deploying a git repo to a self-hosted Docker host (Raspberry Pi) via the `pideploy` CLI — set up push-to-deploy, check deploy status, expose apps over Tailscale, or troubleshoot a runner. Triggers: "deploy this to my pi", "set up push-to-deploy", "expose this app over tailscale", "why isn't my deploy running".
+---
+
+# Deploying with the pideploy CLI
+
+`pideploy` turns any git repo into push-to-deploy on a self-hosted Docker host: a
+per-repo self-hosted GitHub Actions runner builds the repo's Docker image on push
+and runs it via docker compose. Apps appear in Portainer and are exposed over
+Tailscale HTTPS. The CLI is plain and non-interactive — ideal to drive directly.
+
+## First, read the manual
+Run `pideploy --agent` for the authoritative reference, and `pideploy help <command>`
+for any command's options. Do not guess flags — confirm with `help`.
+
+## Output contract (rely on this)
+- Data → STDOUT (`key=value`/rows, or JSON with `--json`). Parse stdout.
+- Progress/warnings/errors → STDERR (`pideploy:`/`warn:`/`error:`).
+- Exit codes: 0 ok · 1 runtime error · 2 usage error. Always check them.
+- Never prompts. Prefer `--json` when parsing programmatically.
+
+## Rules / directives
+- ALWAYS run `pideploy doctor --json` first and ensure `"ok":true`. If not, run
+  `pideploy setup`, then re-check. Do not proceed past FATAL checks.
+- The repo MUST have a GitHub remote before `init`. If missing, run
+  `gh repo create --source=. --private --push` first.
+- Apps MUST listen on the port you pass to `--port` and compose maps
+  `127.0.0.1:<port>:<port>`. Mismatch = unreachable.
+- NEVER add a `pull_request` trigger to the generated workflow on a public repo —
+  it would let a fork run code on the self-hosted runner.
+- NEVER put secrets in `.pideploy.conf` or git. Use GitHub Actions secrets or
+  Portainer env. `init` gitignores `.env`.
+- One runner per repo (personal GitHub accounts can't share runners).
+
+## Standard workflow (end-to-end)
+1. `pideploy doctor --json`            → verify prerequisites (else `pideploy setup`).
+2. `cd <repo>`                         → ensure a GitHub remote exists.
+3. `pideploy init --port <P> --json`   → scaffold, register runner, push (first deploy).
+4. `pideploy status --json`            → confirm runner active and stack is up.
+5. `pideploy serve <P>`                → stdout is the public https URL.
+- Redeploy after changes: `git push` (or `pideploy deploy`).
+- Tear down a repo's runner: `pideploy rm`.
+
+## Troubleshooting
+- runner inactive (status): `systemctl --user status pideploy-runner@<owner-repo>`;
+  ensure linger is on (`pideploy setup` or `sudo loginctl enable-linger $USER`).
+- app unreachable after deploy: verify the in-container listen port matches `--port`
+  and the compose port mapping; then `pideploy serve <port>`.
+- `serve` "access denied": `sudo tailscale set --operator=$USER` (or `pideploy setup`).
+- no HTTPS cert: enable HTTPS Certificates in the Tailscale admin console.
+- init fails "no GitHub remote": `gh repo create --source=. --private --push`.
+- deploys never trigger: check `gh auth status` includes `repo` + `workflow` scopes.
+
+## Command quick reference
+`init` set up repo · `deploy` redeploy now · `status` state · `serve`/`unserve`
+expose · `logs` tail · `config` defaults · `rm` remove runner · `setup` host prep ·
+`doctor` prereqs · `agent` manual. Add `--json` to init/status/deploy/serve/config/doctor.
+SKILL
+}
+
+usage() {
+  cat <<EOF
+pideploy v$PIDEPLOY_VERSION — push-to-deploy for a self-hosted Docker host
+
+WHAT IT IS
+  A plain, scriptable CLI that turns any git repo into push-to-deploy on a
+  machine you own (built for a Raspberry Pi). No cloud, no inbound ports.
+
+HOW IT WORKS
+  'init' scaffolds a Dockerfile/compose/workflow and registers a per-repo,
+  self-hosted GitHub Actions runner on this host. On every push, GitHub Actions
+  runs that runner here; it builds your image and 'docker compose up's it. The
+  runner connects OUTBOUND to GitHub, so this host needs no open ports and works
+  on a tailnet-only network. Portainer shares the Docker engine (sees your apps);
+  'serve' exposes a port over Tailscale with HTTPS.
+
+USAGE
+  pideploy <command> [args] [--json]
+
+COMMANDS
+  init [--port N] [--name NAME] [--serve]   set up the current repo to deploy on push
+  deploy                                    trigger a deploy now (no code change needed)
+  status                                    list runners, running stacks, serve, linger
+  serve <port> | unserve <port>             expose / stop exposing a port (Tailscale HTTPS)
+  logs [app]                                tail a deployed app's container logs
+  config list|get <k>|set <k> <v>|edit      view or change defaults
+  rm                                        remove this repo's runner
+  setup                                     one-time host prep (linger, tailscale operator)
+  doctor                                    check prerequisites (exit 1 if any fail)
+  agent                                     print the full manual for AI agents
+  skill                                     print a Claude Code skill for this CLI
+  version | help [command]                  version, or detailed help for a command
+
+FLAGS
+  --json    structured output (init, status, deploy, serve, config, doctor)
+  --agent   print the agent manual          --skill  print the agent skill
+  --yes     accepted (no-op; CLI never prompts)
+
+Detailed help:  pideploy help <command>      Full manual:  pideploy --agent
+EOF
+}
+
+# ── dispatch ──────────────────────────────────────────────────────────────────
+main() {
+  local args=() a want_help=0
+  for a in "$@"; do case "$a" in
+    --json) FORMAT=json;;
+    --agent) cmd_agent; exit 0;;
+    --skill) cmd_skill; exit 0;;
+    --help|-h) want_help=1;;
+    --yes|-y|--no-color) ;;                 # accepted, no-op
+    *) args+=("$a");;
+  esac; done
+  load_config
+  mkdir -p "$PIDEPLOY_HOME" "$RUNNERS_DIR"
+
+  local cmd="${args[0]:-help}"; [ ${#args[@]} -gt 0 ] && args=("${args[@]:1}") || args=()
+  # `pideploy <cmd> --help` and `pideploy -h` show detailed help
+  [ "$want_help" = 1 ] && { [ "$cmd" = help ] && cmd_help || cmd_help "$cmd"; exit 0; }
+  case "$cmd" in
+    init)    cmd_init    "${args[@]}";;
+    deploy)  cmd_deploy  "${args[@]}";;
+    status)  cmd_status  "${args[@]}";;
+    serve)   cmd_serve   "${args[@]}";;
+    unserve) cmd_unserve "${args[@]}";;
+    logs)    cmd_logs    "${args[@]}";;
+    config)  cmd_config  "${args[@]}";;
+    rm)      cmd_rm      "${args[@]}";;
+    setup)   cmd_setup   "${args[@]}";;
+    doctor)  cmd_doctor  "${args[@]}";;
+    agent)   cmd_agent;;
+    skill)   cmd_skill;;
+    help)    cmd_help "${args[@]}";;
+    version|--version|-v) printf 'pideploy %s\n' "$PIDEPLOY_VERSION";;
+    *) usage_err "unknown command: $cmd (try: pideploy help)";;
+  esac
+}
+
+if [ "${PIDEPLOY_LIB:-0}" != "1" ]; then main "$@"; fi

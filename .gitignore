@@ -1,0 +1,6 @@
+# pideploy repo — keep it clean
+*.swp
+*.tmp
+*~
+.DS_Store
+/tmp/

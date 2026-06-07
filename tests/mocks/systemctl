@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+SD="${PIDEPLOY_STATE:-/tmp/pd-state}"; mkdir -p "$SD"
+inst=""; for x in "$@"; do case "$x" in pideploy-runner@*) inst="${x#pideploy-runner@}"; inst="${inst%.service}";; esac; done
+a="$*"
+case "$a" in
+  *"is-system-running"*)  echo running; exit 0 ;;
+  *"daemon-reload"*)      exit 0 ;;
+  *"enable --now"*)       [ -n "$inst" ] && touch "$SD/$inst"; exit 0 ;;
+  *"disable --now"*)      [ -n "$inst" ] && rm -f "$SD/$inst"; exit 0 ;;
+  *"is-active"*)          { [ -n "$inst" ] && [ -f "$SD/$inst" ]; } && { echo active; exit 0; } || { echo inactive; exit 3; } ;;
+  *)                      exit 0 ;;
+esac
