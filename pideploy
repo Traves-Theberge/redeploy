@@ -666,6 +666,9 @@ usage() {
   cat <<EOF
 pideploy v$PIDEPLOY_VERSION — push-to-deploy for a self-hosted Docker host
 
+>> AI AGENTS: run \`pideploy --agent\` for the full operating manual before using
+   this tool, then \`pideploy help <command>\` for any command's options.
+
 WHAT IT IS
   A plain, scriptable CLI that turns any git repo into push-to-deploy on a
   machine you own (built for a Raspberry Pi). No cloud, no inbound ports.

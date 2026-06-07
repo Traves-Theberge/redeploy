@@ -114,6 +114,7 @@ assert_absent "agent manual has no PII" "$AG" "@example"   # sanity: no stray ad
 grp "CLI: self-description, per-command help & skill"
 assert_contains "usage: what-it-is"  "$($BIN help)" "WHAT IT IS"
 assert_contains "usage: how-it-works" "$($BIN help)" "HOW IT WORKS"
+assert_contains "usage: top-line agent directive" "$($BIN help)" "AI AGENTS: run \`pideploy --agent\`"
 assert_contains "usage: getting started" "$($BIN help)" "GETTING STARTED"
 assert_contains "usage: first step is setup" "$($BIN help)" "pideploy setup"
 assert_contains "usage: agent section" "$($BIN help)" "FOR AI AGENTS"
