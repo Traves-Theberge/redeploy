@@ -173,6 +173,12 @@ assert_contains "init: gitignore blocks .env"    "$(cat "$REPO/.gitignore")" ".e
 assert_contains "init: workflow has no PR trigger guard" "$(cat "$REPO/.github/workflows/deploy.yml")" "Do NOT"
 assert_absent   "init: workflow has no pull_request" "$(cat "$REPO/.github/workflows/deploy.yml")" "pull_request:"
 assert_contains "init: workflow self-hosted"    "$(cat "$REPO/.github/workflows/deploy.yml")" "self-hosted"
+# regression: generated workflow MUST be valid YAML (the ${{ }}-in-flow-mapping bug)
+assert_absent "init: workflow has no inline concurrency braces" "$(cat "$REPO/.github/workflows/deploy.yml")" "{ group:"
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+  python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' "$REPO/.github/workflows/deploy.yml" 2>/dev/null \
+    && ok "init: workflow is valid YAML" || bad "init: workflow is valid YAML" "GitHub Actions YAML did not parse"
+else ok "init: workflow is valid YAML (skip: no pyyaml)"; fi
 assert_contains "init: runner started msg"      "$OUT" "runner pi-testuser-testrepo"
 assert_ok "init: runner registered dir exists"  "[ -d '$PIDEPLOY_HOME/runners/testuser-testrepo' ]"
 assert_ok "init: runner marked active (state)"  "[ -f '$PIDEPLOY_STATE/testuser-testrepo' ]"
