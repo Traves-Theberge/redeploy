@@ -404,7 +404,9 @@ HTTPS. This CLI is plain and non-interactive.
 ## Output contract
 - Primary data -> STDOUT. Plain `key=value` or tab-separated rows; add `--json`
   for structured JSON on: init, status, deploy, serve, config, doctor.
-- Progress/warnings/errors -> STDERR (`pideploy:` / `warn:` / `error:`).
+- Progress/warnings/errors -> STDERR (`pideploy:` / `warn:` / `error:`). In `--json`
+  mode, errors are a JSON object on STDERR: `{"error":"<msg>","code":<N>}`. On any
+  error STDOUT stays empty.
 - Exit codes: 0 ok · 1 runtime error · 2 usage error.
 - Never prompts; reads no stdin. Safe to run unattended.
 
@@ -435,9 +437,12 @@ HTTPS. This CLI is plain and non-interactive.
 - `pideploy logs [app]` — exec `docker logs -f` (stdout passthrough).
 - `pideploy config [list|get <k>|set <k> <v>|edit] [--json]` — manage defaults.
 - `pideploy rm` — deregister this repo's runner.
-- `pideploy version` · `pideploy help` · `pideploy --agent`.
+- `pideploy skill` — print a Claude Code skill for this CLI (also: `--skill`).
+- `pideploy help [command]` — overview, or detailed help + options for one command.
+- `pideploy version` · `pideploy --agent` (print this manual).
 
-Global flags: `--json` (structured output), `--agent` (print this), `--yes` (accepted, no-op).
+Global flags: `--json` (structured output), `--agent` (this manual), `--skill`
+(the skill), `--yes` (accepted, no-op).
 
 ## Config & precedence
 Flags > per-repo `.pideploy.conf` > global `$XDG_CONFIG_HOME/pideploy/config` > built-in.
@@ -619,7 +624,8 @@ for any command's options. Do not guess flags — confirm with `help`.
 
 ## Output contract (rely on this)
 - Data → STDOUT (`key=value`/rows, or JSON with `--json`). Parse stdout.
-- Progress/warnings/errors → STDERR (`pideploy:`/`warn:`/`error:`).
+- Progress/warnings/errors → STDERR (`pideploy:`/`warn:`/`error:`). With `--json`,
+  errors are `{"error":"<msg>","code":<N>}` on STDERR; STDOUT stays empty on error.
 - Exit codes: 0 ok · 1 runtime error · 2 usage error. Always check them.
 - Never prompts. Prefer `--json` when parsing programmatically.
 
@@ -656,9 +662,10 @@ for any command's options. Do not guess flags — confirm with `help`.
 - deploys never trigger: check `gh auth status` includes `repo` + `workflow` scopes.
 
 ## Command quick reference
-`init` set up repo · `deploy` redeploy now · `status` state · `serve`/`unserve`
-expose · `logs` tail · `config` defaults · `rm` remove runner · `setup` host prep ·
-`doctor` prereqs · `agent` manual. Add `--json` to init/status/deploy/serve/config/doctor.
+`setup` host prep · `doctor` prereqs · `init` set up repo · `deploy` redeploy now ·
+`status` state · `serve`/`unserve` expose · `logs` tail · `config` defaults ·
+`rm` remove runner · `agent` manual · `skill` this skill · `help <cmd>` per-command
+help. Add `--json` to init/status/deploy/serve/config/doctor.
 SKILL
 }
 
