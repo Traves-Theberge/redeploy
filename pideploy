@@ -16,6 +16,7 @@ PIDEPLOY_VERSION="1.0.0"
 PIDEPLOY_HOME="${PIDEPLOY_HOME:-$HOME/.pideploy}"
 TEMPLATE_DIR="$PIDEPLOY_HOME/runner-template"
 RUNNERS_DIR="$PIDEPLOY_HOME/runners"
+PORTS_FILE="$PIDEPLOY_HOME/ports"   # host-wide registry: <owner-repo>=<port> (no collisions)
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pideploy"
 CONFIG_FILE="$CONFIG_DIR/config"
 UNIT_DIR="$HOME/.config/systemd/user"
@@ -78,6 +79,39 @@ cfg() { printf '%s' "${CFG[$1]:-}"; }
 config_save() {
   mkdir -p "$CONFIG_DIR"; : > "$CONFIG_FILE"
   local k; for k in "${!CFG[@]}"; do printf '%s=%s\n' "$k" "${CFG[$k]}"; done | sort >> "$CONFIG_FILE"
+}
+
+# ── port registry (one host, many repos, no collisions) ─────────────────────
+port_reg_get() { [ -f "$PORTS_FILE" ] && awk -F= -v s="$1" '$1==s{print $2; exit}' "$PORTS_FILE" || true; }
+port_reg_set() { # slug port  — upsert
+  local s="$1" p="$2" tmp; mkdir -p "$PIDEPLOY_HOME"; tmp=$(mktemp)
+  { [ -f "$PORTS_FILE" ] && grep -v "^$s=" "$PORTS_FILE"; printf '%s=%s\n' "$s" "$p"; } > "$tmp" 2>/dev/null || true
+  mv "$tmp" "$PORTS_FILE"
+}
+port_reg_del() { # slug
+  [ -f "$PORTS_FILE" ] || return 0
+  local tmp; tmp=$(mktemp); grep -v "^$1=" "$PORTS_FILE" > "$tmp" 2>/dev/null || true; mv "$tmp" "$PORTS_FILE"
+}
+port_in_use() { # port [exclude-slug] [exclude-app]  -> 0 if taken by ANOTHER repo/container
+  local p="$1" xslug="${2:-}" xapp="${3:-}" s pp
+  if [ -f "$PORTS_FILE" ]; then
+    while IFS='=' read -r s pp; do
+      [ "$s" = "$xslug" ] && continue
+      [ "$pp" = "$p" ] && return 0
+    done < "$PORTS_FILE"
+  fi
+  # bound on the host right now by a DIFFERENT container?
+  docker ps --format '{{.Names}}|{{.Ports}}' 2>/dev/null \
+    | awk -F'|' -v port=":$p->" -v self="$xapp" '$2 ~ port && $1 != self {f=1} END{exit !f}' && return 0
+  return 1
+}
+port_alloc() { # [exclude-slug] [exclude-app]  -> lowest free port at/above default_port
+  local xslug="${1:-}" xapp="${2:-}" start p
+  start=$(cfg default_port); [[ "$start" =~ ^[0-9]+$ ]] || start=8080
+  for (( p=start; p<=start+999; p++ )); do
+    port_in_use "$p" "$xslug" "$xapp" || { printf '%s' "$p"; return 0; }
+  done
+  die "no free port found in ${start}-$((start+999))"
 }
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -149,7 +183,15 @@ cmd_init() {
   need git; need gh; need docker
   local nwo slug app branch; nwo=$(resolve_repo); slug=$(repo_slug "$nwo")
   app="${name:-$(cfg app_name)}"; app="${app:-${nwo##*/}}"
-  branch=$(cfg default_branch); : "${port:=$(cfg default_port)}"
+  branch=$(cfg default_branch)
+  # port: explicit (collision-guarded) > recorded for this repo > auto-allocated.
+  # The host-wide registry keeps every app on a distinct, stable port.
+  local recorded; recorded=$(port_reg_get "$slug")
+  if [ -n "$port" ]; then
+    port_in_use "$port" "$slug" "$app" && die "port $port is already in use by another app on this host (omit --port to auto-assign a free one, e.g. $(port_alloc "$slug" "$app"))"
+  elif [ -n "$recorded" ]; then port="$recorded"
+  else port=$(port_alloc "$slug" "$app"); fi
+  port_reg_set "$slug" "$port"
   log "repo=$nwo app=$app port=$port branch=$branch runner=pi-$slug"
 
   # secrets: a local .env is the source of truth — synced to a GitHub Actions
@@ -436,8 +478,20 @@ cmd_rm() {
     [ -n "$token" ] && ( cd "$rdir" && ./config.sh remove --token "$token" >/dev/null 2>&1 || true )
   fi
   rm -rf "$rdir"
+  port_reg_del "$slug"   # free its port for reuse
   log "removed runner pi-$slug (workflow file kept in repo)"
   printf 'removed=pi-%s\n' "$slug"
+}
+
+cmd_ports() { # list the host port registry (which repo uses which port)
+  local s p
+  if [ "$FORMAT" = json ]; then
+    local sep="" out='{'
+    if [ -f "$PORTS_FILE" ]; then while IFS='=' read -r s p; do [ -n "$s" ] && { out+="$sep$(json_str "$s"):$p"; sep=,; }; done < "$PORTS_FILE"; fi
+    printf '%s}\n' "$out"
+  else
+    [ -f "$PORTS_FILE" ] && sort "$PORTS_FILE" || true
+  fi
 }
 
 cmd_setup() {
@@ -543,6 +597,7 @@ Result: containers run on the host's Docker engine (visible in Portainer);
 - `pideploy unserve <port>` — stop exposing.
 - `pideploy logs [app]` — exec `docker logs -f` (stdout passthrough).
 - `pideploy config [list|get <k>|set <k> <v>|edit] [--json]` — manage defaults.
+- `pideploy ports [--json]` — list the host port registry (repo→port).
 - `pideploy env [--name NAME] [--json]` — sync local .env to a GitHub Actions secret.
 - `pideploy rm` — deregister this repo's runner.
 - `pideploy skill` — print a Claude Code skill for this CLI (also: `--skill`).
@@ -568,6 +623,12 @@ New host setup: `pideploy config template > ~/.config/pideploy/config` then edit
 - `.github/workflows/deploy.yml` (runs-on [self-hosted, <label>]; push + dispatch only).
 - `.pideploy.conf` (port/name/branch; safe to commit, no secrets).
 - appends `.env` to `.gitignore`.
+
+## Ports (no collisions across repos)
+A host-wide registry ($PIDEPLOY_HOME/ports, <owner-repo>=<port>) keeps every app on
+a distinct, stable port. `init` auto-assigns the lowest free port at/above default_port
+(8080) when --port is omitted; an explicit --port is rejected (exit 1) if another app
+already uses it. Re-init reuses the repo's recorded port; `rm` frees it. See `pideploy ports`.
 
 ## Secrets (.env)
 A local `.env` is the source of truth. When present, `init` uploads it to a GitHub
@@ -610,7 +671,9 @@ USAGE
                 [--dotenv-secret NAME|--no-dotenv] [--json]
 
 OPTIONS
-  --port N             Container port to bind on 127.0.0.1 and EXPOSE (default: config default_port=8080).
+  --port N             Host port to bind on 127.0.0.1 (collision-checked). Omit to AUTO-ASSIGN
+                       the lowest free port at/above default_port (8080) — apps never collide.
+                       The choice is recorded in the host registry (see: pideploy ports).
   --name NAME          App / Docker-compose stack / container name (default: .pideploy.conf app_name, else repo name).
   --serve              After deploy, expose the port over Tailscale HTTPS immediately.
   --no-serve           Do not expose (overrides config auto_serve).
@@ -723,8 +786,20 @@ H
 ;;
     rm) cat <<'H'
 pideploy rm — deregister this repo's self-hosted runner and remove its service.
-Leaves the workflow file in the repo. Re-run `pideploy init` to recreate.
+Leaves the workflow file in the repo; frees its port in the host registry.
+Re-run `pideploy init` to recreate.
 USAGE   pideploy rm
+H
+;;
+    ports) cat <<'H'
+pideploy ports — list the host port registry (which repo is assigned which port).
+
+pideploy keeps every onboarded app on a distinct, stable host port so deploys
+never collide. `init` auto-assigns the lowest free port at/above default_port
+(8080) unless you pass --port (which is collision-checked). `rm` frees a port.
+
+USAGE   pideploy ports [--json]
+OUTPUT  text: '<owner-repo>=<port>' lines; --json: {"<owner-repo>": <port>, ...}
 H
 ;;
     setup) cat <<'H'
@@ -818,8 +893,10 @@ then edit. NEVER commit a real host config or .env — only the placeholder temp
   `pideploy setup`, then re-check. Do not proceed past FATAL checks.
 - The repo MUST have a GitHub remote before `init`. If missing, run
   `gh repo create --source=. --private --push` first.
-- Apps MUST listen on the port you pass to `--port` and compose maps
-  `127.0.0.1:<port>:<port>`. Mismatch = unreachable.
+- Apps MUST listen on the port `init` uses (pass `--port`, or let it auto-assign)
+  and compose maps `127.0.0.1:<port>:<port>`. Mismatch = unreachable.
+- Ports never collide: `init` auto-assigns a free, stable port per repo (registry).
+  Omit `--port` to auto-assign; an explicit taken `--port` fails. See `pideploy ports`.
 - NEVER add a `pull_request` trigger to the generated workflow on a public repo —
   it would let a fork run code on the self-hosted runner.
 - NEVER commit secrets. A local `.env` is the source of truth: `init` syncs it to
@@ -850,8 +927,8 @@ then edit. NEVER commit a real host config or .env — only the placeholder temp
 ## Command quick reference
 `setup` host prep · `doctor` prereqs · `config template` host config · `init` set up repo ·
 `onboard <repo>` clone+init on host · `deploy` redeploy now · `status` state ·
-`serve`/`unserve` expose · `logs` tail · `config` defaults · `env` sync .env→secret ·
-`rm` remove runner · `agent` manual · `skill` this skill · `help <cmd>` per-command help.
+`serve`/`unserve` expose · `logs` tail · `config` defaults · `ports` port registry ·
+`env` sync .env→secret · `rm` remove runner · `agent` manual · `skill` this skill · `help <cmd>`.
 Add `--json` to init/status/deploy/serve/config/doctor.
 SKILL
 }
@@ -899,6 +976,7 @@ COMMANDS
   serve <port> | unserve <port>             expose / stop exposing a port (Tailscale HTTPS)
   logs [app]                                tail a deployed app's container logs
   config list|get|set|edit|template|path    view/change defaults; 'template' prints a host-config example
+  ports                                     list which repo uses which port (host registry)
   env [--name NAME]                         sync local .env -> GitHub Actions secret
   rm                                        remove this repo's runner
   setup                                     one-time host prep (linger, tailscale operator)
@@ -942,6 +1020,7 @@ main() {
     logs)    cmd_logs    "${args[@]}";;
     config)  cmd_config  "${args[@]}";;
     env)     cmd_env     "${args[@]}";;
+    ports)   cmd_ports   "${args[@]}";;
     onboard) cmd_onboard "${args[@]}";;
     rm)      cmd_rm      "${args[@]}";;
     setup)   cmd_setup   "${args[@]}";;

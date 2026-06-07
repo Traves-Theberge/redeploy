@@ -12,3 +12,9 @@ pideploy.config
 .env
 *.env
 !*.env.example
+
+# guard: this is the TOOL repo, not an app — a stray `pideploy init` here must
+# never pollute the tracked tree (load_config reads a CWD .pideploy.conf).
+/.pideploy.conf
+/docker-compose.yml
+/.github/workflows/deploy.yml

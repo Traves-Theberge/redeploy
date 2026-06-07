@@ -76,6 +76,9 @@ exit 0
 C
 printf '#!/usr/bin/env bash\nsleep 0.1\n' > "$PIDEPLOY_HOME/runner-template/run.sh"
 chmod +x "$PIDEPLOY_HOME/runner-template/config.sh" "$PIDEPLOY_HOME/runner-template/run.sh"
+# Run from inside the (non-git) sandbox so the CWD's .pideploy.conf / git repo
+# can never leak into load_config — tests are independent of where they're launched.
+cd "$SBOX"
 
 # call a library function in isolation
 lib() { PIDEPLOY_LIB=1 bash -c "source $BIN; $1" 2>&1; }
@@ -191,7 +194,7 @@ assert_contains "help status: documents deploy_host json" "$($BIN help status)" 
 assert_contains "<cmd> --help routes" "$($BIN serve --help)" "Tailscale"
 assert_contains "-h routes to help"   "$($BIN status -h)" "status"
 # completeness: EVERY dispatchable command resolves to a help section (no gaps)
-for c in init onboard deploy status serve unserve logs config env rm setup doctor agent skill help version; do
+for c in init onboard deploy status serve unserve logs config ports env rm setup doctor agent skill help version; do
   assert_ok "help section exists: $c" "$BIN help $c"
 done
 assert_fail     "help unknown cmd → error" "$BIN help nope"
@@ -277,6 +280,41 @@ RM="$(cd "$REPO" && $BIN rm 2>&1 || true)"
 assert_contains "rm: removes runner"  "$RM" "removed runner"
 assert_ok "rm: runner dir gone"       "[ ! -d '$PIDEPLOY_HOME/runners/testuser-testrepo' ]"
 assert_ok "rm: state cleared"         "[ ! -f '$PIDEPLOY_STATE/testuser-testrepo' ]"
+
+# ════════════════════════════════════════════════════════════════════════════
+grp "Port registry & collision guard"
+rm -f "$PIDEPLOY_HOME/ports"   # clean slate for deterministic allocation
+for nm in appa appb appc; do  # create 3 distinct pushable repos (no shared port)
+  git init -q --bare "$SBOX/$nm.git" >/dev/null 2>&1
+  git init -q "$SBOX/p-$nm" >/dev/null 2>&1
+  git -C "$SBOX/p-$nm" remote add origin "$SBOX/$nm.git" 2>/dev/null
+  echo '{"name":"x","scripts":{"start":"true"}}' > "$SBOX/p-$nm/package.json"
+  git -C "$SBOX/p-$nm" add -A >/dev/null 2>&1
+  git -C "$SBOX/p-$nm" commit -qm i >/dev/null 2>&1
+  git -C "$SBOX/p-$nm" branch -M main >/dev/null 2>&1
+  git -C "$SBOX/p-$nm" push -q -u origin main >/dev/null 2>&1
+done
+PA="$SBOX/p-appa"; PB="$SBOX/p-appb"; PC="$SBOX/p-appc"
+portof() { grep -oE '127\.0\.0\.1:[0-9]+' "$1/docker-compose.yml" | head -1 | grep -oE '[0-9]+$'; }
+# two DIFFERENT repos, neither passing --port → auto-assigned distinct ports
+( cd "$PA" && MOCK_REPO=testuser/appa $BIN init --no-dotenv ) >/dev/null 2>&1
+( cd "$PB" && MOCK_REPO=testuser/appb $BIN init --no-dotenv ) >/dev/null 2>&1
+assert_eq "auto: first app gets default 8080"      "$(portof "$PA")" "8080"
+assert_eq "auto: second app gets next free 8081"   "$(portof "$PB")" "8081"
+assert_contains "registry records appa=8080"       "$(cat "$PIDEPLOY_HOME/ports")" "testuser-appa=8080"
+assert_contains "registry records appb=8081"       "$(cat "$PIDEPLOY_HOME/ports")" "testuser-appb=8081"
+assert_contains "ports cmd lists assignments"      "$($BIN ports)" "testuser-appb=8081"
+assert_json     "ports --json valid"               "$($BIN ports --json)"
+assert_struct   "ports --json maps repo→int"       "$($BIN ports --json)" "d['testuser-appb']==8081"
+# explicit --port that is already taken by another repo → hard fail (exit 1)
+assert_exit  "explicit --port collision → exit 1"  "(cd '$PC' && MOCK_REPO=testuser/appc $BIN init --port 8080 --no-dotenv)" 1
+assert_contains "collision error names the port"   "$(cd "$PC" && MOCK_REPO=testuser/appc $BIN init --port 8080 --no-dotenv 2>&1 || true)" "already in use"
+# stable: re-init the same repo (no --port) keeps its assigned port
+( cd "$PA" && MOCK_REPO=testuser/appa $BIN init --no-dotenv ) >/dev/null 2>&1
+assert_eq "stable: re-init reuses the same port"   "$(portof "$PA")" "8080"
+# rm frees the port back into the pool
+( cd "$PA" && MOCK_REPO=testuser/appa $BIN rm ) >/dev/null 2>&1
+assert_absent "rm frees the port from registry"    "$(cat "$PIDEPLOY_HOME/ports" 2>/dev/null)" "testuser-appa="
 
 # ════════════════════════════════════════════════════════════════════════════
 grp "Secrets: no leakage"
