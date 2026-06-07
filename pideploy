@@ -606,7 +606,8 @@ per-repo self-hosted runner as a user systemd service; commits and pushes (which
 triggers the first deploy).
 
 USAGE
-  pideploy init [--port N] [--name NAME] [--serve|--no-serve] [--json]
+  pideploy init [--port N] [--name NAME] [--serve|--no-serve]
+                [--dotenv-secret NAME|--no-dotenv] [--json]
 
 OPTIONS
   --port N             Container port to bind on 127.0.0.1 and EXPOSE (default: config default_port=8080).
@@ -645,11 +646,14 @@ pideploy status — show the deploy state on this host.
 
 USAGE   pideploy status [--json]
 OUTPUT (text, tab-separated rows on stdout):
-  runner <name> <active|inactive>     one row per registered repo runner
-  stack  <name> <status> <ports>      one row per running container
-  serve  <url>                        each Tailscale HTTPS proxy
-  linger <enabled|disabled>           whether user services persist across reboot
-  --json: {runners:[{name,active}], stacks:[{name,status,ports}], serve:[..], linger:bool}
+  target    <deploy_host>             this deploy target (config deploy_host, else hostname)
+  portainer <url>                     Portainer URL, if configured
+  runner    <name> <active|inactive>  one row per registered repo runner
+  stack     <name> <status> <ports>   one row per running container
+  serve     <url>                     each Tailscale HTTPS proxy
+  linger    <enabled|disabled>        whether user services persist across reboot
+  --json: {runners:[{name,active}], stacks:[{name,status,ports}], serve:[..],
+           linger:bool, deploy_host:str, portainer_url:str}
 H
 ;;
     serve) cat <<'H'
@@ -664,7 +668,8 @@ NOTE    Needs Tailscale HTTPS enabled + `sudo tailscale set --operator=$USER` (s
 H
 ;;
     unserve) cat <<'H'
-pideploy unserve — stop exposing a port over Tailscale.
+pideploy unserve — stop exposing over Tailscale (turns off HTTPS serve on :443).
+Note: today serve maps one app to the host root, so this clears that mapping.
 USAGE   pideploy unserve <port>
 H
 ;;
@@ -753,7 +758,17 @@ Save it to .claude/skills/pideploy/SKILL.md to install.
 USAGE   pideploy skill > .claude/skills/pideploy/SKILL.md
 H
 ;;
-    *) usage_err "no help for command: $c";;
+    help) cat <<'H'
+pideploy help — show the overview, or detailed help for one command.
+USAGE   pideploy help [command]      # also: pideploy <command> --help
+H
+;;
+    version) cat <<'H'
+pideploy version — print the CLI version.
+USAGE   pideploy version            # also: pideploy --version
+H
+;;
+    *) usage_err "no help for command: $c (try: pideploy help)";;
   esac
 }
 

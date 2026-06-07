@@ -1,7 +1,29 @@
 #!/usr/bin/env bash
-# pideploy test suite — hermetic (mocks gh/docker/tailscale/systemctl/loginctl).
-# Usage: tests/run.sh            # run everything
+# pideploy test suite — hermetic: mocks gh/docker/tailscale/systemctl/loginctl
+# (in tests/mocks/), uses a throwaway $HOME/$PIDEPLOY_HOME sandbox, and touches
+# no real services or network. Runs in CI (.github/workflows/ci.yml) + shellcheck.
+#
+# Usage: tests/run.sh            # run everything (exit 0 = all passed)
 #        tests/run.sh -v         # verbose (show each passing assertion)
+#
+# Coverage map (one grp() per area):
+#   Unit: pure functions ........ repo_slug, detect_dockerfile, tailnet_host, plain output
+#   Unit: configuration ......... defaults + built-in→host→repo precedence, set/get/list
+#   Host config & onboarding .... config template (leak-safe), config.example, path,
+#                                  status target, onboard (clone+init)
+#   CLI: surface ................ version, help, unknown-cmd error
+#   CLI: agent manual ........... --agent content (architecture, routing, pipeline, json errors)
+#   CLI: help & skill ........... usage sections, per-command help (every cmd), --skill
+#   CLI: doctor & status ........ check output
+#   Integration ................. init → status → serve → logs → deploy → rm (mocked, e2e)
+#   Secrets: no leakage ......... .env→secret, value never printed/committed, workflow refs name
+#   AI contract: JSON ........... valid JSON + strict shape/type for every data command
+#   AI contract: streams/exit ... stdout=data, stderr=progress, exit codes 0/1/2
+#   AI contract: error shape .... text vs json errors, empty stdout on error
+#   Guards ...................... not-in-repo, unknown flag, missing-value usage errors
+#
+# Helpers: assert_eq/contains/absent/ok/fail/file/exit/json/struct (see below).
+# lib() sources the CLI with PIDEPLOY_LIB=1 to unit-test internal functions.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -159,10 +181,19 @@ assert_contains "usage: first step is setup" "$($BIN help)" "pideploy setup"
 assert_contains "usage: agent section" "$($BIN help)" "FOR AI AGENTS"
 assert_contains "usage: mentions --skill install" "$($BIN help)" "SKILL.md"
 assert_contains "help <cmd>: init options" "$($BIN help init)" "--port"
+assert_contains "help <cmd>: init documents --dotenv-secret" "$($BIN help init)" "--dotenv-secret"
 assert_contains "help <cmd>: init describes --name" "$($BIN help init)" "stack"
 assert_contains "help <cmd>: config keys" "$($BIN help config)" "default_port"
+assert_contains "help <cmd>: config documents template" "$($BIN help config)" "config template"
+# status help must match what status actually emits (target/deploy_host)
+assert_contains "help status: documents target row"   "$($BIN help status)" "target"
+assert_contains "help status: documents deploy_host json" "$($BIN help status)" "deploy_host"
 assert_contains "<cmd> --help routes" "$($BIN serve --help)" "Tailscale"
 assert_contains "-h routes to help"   "$($BIN status -h)" "status"
+# completeness: EVERY dispatchable command resolves to a help section (no gaps)
+for c in init onboard deploy status serve unserve logs config env rm setup doctor agent skill help version; do
+  assert_ok "help section exists: $c" "$BIN help $c"
+done
 assert_fail     "help unknown cmd → error" "$BIN help nope"
 SK="$($BIN skill)"
 assert_contains "skill: frontmatter name"  "$SK" "name: pideploy"
@@ -192,7 +223,7 @@ REPO="$SBOX/proj"; mkdir -p "$REPO" "$SBOX/remote.git"
    && echo '{"name":"proj","scripts":{"start":"true"}}' > package.json \
    && git add -A && git commit -q -m init && git branch -M main && git push -q -u origin main )
 
-OUT="$(cd "$REPO" && $BIN init --yes --port 8080 2>&1)"
+OUT="$(cd "$REPO" && $BIN init --port 8080 2>&1)"
 assert_contains "init: announces repo" "$OUT" "testuser/testrepo"
 assert_file "init: Dockerfile created"   "$REPO/Dockerfile"
 assert_file "init: compose created"      "$REPO/docker-compose.yml"
@@ -230,12 +261,16 @@ assert_contains "status: shows container"     "$ST" "myapp"
 assert_contains "serve: prints https url" "$(cd "$REPO" && $BIN serve 8080 2>&1)" "https://test-pi.tailnet.ts.net/"
 assert_ok       "unserve runs"            "(cd '$REPO' && $BIN unserve 8080)"
 assert_contains "deploy: dispatches"      "$(cd "$REPO" && $BIN deploy 2>&1)" "dispatched"
+# logs: defaults to the first running container and tails it
+assert_contains "logs: tails first container" "$(cd "$REPO" && $BIN logs 2>&1)" "log line"
+assert_contains "logs: accepts explicit app" "$(cd "$REPO" && $BIN logs myapp 2>&1)" "log line"
 
 # idempotency: second init should skip registration, not error
-OUT2="$(cd "$REPO" && $BIN init --yes --port 8080 2>&1)"
+OUT2="$(cd "$REPO" && $BIN init --port 8080 2>&1)"
 assert_contains "init idempotent (skips runner)" "$OUT2" "already registered"
 assert_contains "init idempotent (keeps Dockerfile)" "$OUT2" "kept existing Dockerfile"
-assert_ok       "init: exits 0 on success" "(cd '$REPO' && $BIN init --yes --port 8080)"
+# --yes is accepted as a no-op (CLI never prompts) and init exits 0 on success
+assert_ok       "init: accepts --yes no-op, exits 0" "(cd '$REPO' && $BIN init --yes --port 8080)"
 
 # rm deregisters
 RM="$(cd "$REPO" && $BIN rm 2>&1 || true)"
@@ -266,6 +301,10 @@ else ok "secrets workflow is valid YAML (skip: no pyyaml)"; fi
 assert_eq       ".env is NOT tracked by git"                    "$(cd "$SREPO" && git ls-files | grep -c '\.env$' || true)" "0"
 assert_contains ".gitignore protects .env"                      "$(cat "$SREPO/.gitignore")" ".env"
 assert_absent   "env command output never contains the value"   "$(cd "$SREPO" && $BIN env 2>&1)" "$SENTINEL"
+assert_contains "env reports the secret name (stdout)"          "$(cd "$SREPO" && $BIN env 2>/dev/null)" "secret=PIDEPLOY_DOTENV"
+assert_struct   "env --json shape & types"                      "$(cd "$SREPO" && $BIN env --json 2>/dev/null)" \
+  "isinstance(d['secret'],str) and isinstance(d['repo'],str)"
+assert_exit     "env without a .env → error (exit 1)"           "(cd '$SBOX/proj' && $BIN env)" 1
 # --no-dotenv: even with a .env present, no secret step is emitted
 NOENV="$SBOX/noenv-proj"; mkdir -p "$NOENV" "$SBOX/ne.git"; ( cd "$SBOX/ne.git" && git init -q --bare )
 ( cd "$NOENV" && git init -q && git remote add origin "$SBOX/ne.git" && echo '{}' > package.json \
@@ -330,8 +369,9 @@ assert_struct   "missing-dep error (json)" "$(lib 'FORMAT=json; need no-such-bin
   "isinstance(d['error'],str) and 'dependency' in d['error'] and d['code']==1"
 
 grp "Guards"
-assert_fail "init outside a git repo fails" "(cd '$SBOX' && $BIN init)"
-assert_fail "serve without port fails"      "$BIN serve"
+assert_fail "init outside a git repo fails"  "(cd '$SBOX' && $BIN init)"
+assert_exit "init unknown flag → usage (2)"  "(cd '$REPO' && $BIN init --bogus)" 2
+assert_exit "config set without value → 2"   "$BIN config set onlykey" 2
 
 # ── summary ──────────────────────────────────────────────────────────────────
 printf '\n%s────────────────────────────────────────%s\n' "$c_d" "$c_0"
