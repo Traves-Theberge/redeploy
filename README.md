@@ -16,8 +16,9 @@
 [Quick start](#-60-second-quick-start) · [Setup](#-prerequisites--setup) · [How it works](#-how-it-works) · [Commands](#-command-reference) · [Security](#-security-model) · [AI-ready](#-ai-ready)
 
 ![ci](https://github.com/Traves-Theberge/pideploy/actions/workflows/ci.yml/badge.svg)
+![release](https://img.shields.io/github/v/release/Traves-Theberge/pideploy?sort=semver)
 ![shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)
-![tests](https://img.shields.io/badge/tests-154%20hermetic-32CD32)
+![tests](https://img.shields.io/badge/tests-209%20hermetic-32CD32)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![self-hosted](https://img.shields.io/badge/self--hosted-Raspberry%20Pi-C51A4A?logo=raspberrypi&logoColor=white)
 
@@ -185,37 +186,39 @@ sudo loginctl enable-linger "$USER"
 
 ## 🛠 Installation
 
-`pideploy` is a **single, self-contained Bash script** — no runtime, no package manager, no dependencies to compile. It runs on any Linux host with **Bash ≥ 4.4**. Pick one method:
+`pideploy` is a **single, self-contained Bash script** (no runtime, no package manager). It installs on the **Linux deploy host** — the machine that runs your apps (a Raspberry Pi or any Linux box with Docker + systemd).
 
-**Option A — one-line install (just the CLI):**
+### Where does it go? (platform)
+
+| Your machine | Install pideploy? |
+|---|---|
+| **Linux deploy host** (Pi / server) | **Yes** — this is where it runs |
+| **macOS / Windows / Linux dev laptop** | **No** — you just `git push`; the host does the rest |
+
+> The deploy host **must be Linux** (the self-hosted runner uses systemd user services + linger). On Windows, run the host inside **WSL2**. macOS can run the CLI but can't be a *host*.
+
+### Install (on the Linux host)
+
+**One-liner (recommended)** — installs the latest [release](https://github.com/Traves-Theberge/pideploy/releases):
 
 ```bash
-mkdir -p ~/.local/bin
-curl -fsSL https://raw.githubusercontent.com/Traves-Theberge/pideploy/main/pideploy -o ~/.local/bin/pideploy
+curl -fsSL https://raw.githubusercontent.com/Traves-Theberge/pideploy/main/install.sh | bash
+```
+
+**Pin a specific version** (or just grab the script):
+
+```bash
+curl -fsSL https://github.com/Traves-Theberge/pideploy/releases/latest/download/pideploy -o ~/.local/bin/pideploy
 chmod +x ~/.local/bin/pideploy
 ```
 
-**Option B — clone + installer (recommended; gets tests & docs too):**
+**From a clone** (gets tests + docs):
 
 ```bash
-git clone https://github.com/Traves-Theberge/pideploy
-cd pideploy
-./install.sh          # symlinks ./pideploy -> ~/.local/bin/pideploy
+git clone https://github.com/Traves-Theberge/pideploy && cd pideploy && ./install.sh
 ```
 
-**Option C — manual:**
-
-```bash
-install -Dm755 pideploy ~/.local/bin/pideploy
-```
-
-Then make sure `~/.local/bin` is on your `PATH` (the installer warns if it isn't):
-
-```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
-```
-
-**Verify and finish setup:**
+Ensure `~/.local/bin` is on your `PATH` (the installer warns if not), then:
 
 ```bash
 pideploy version
@@ -223,9 +226,9 @@ pideploy setup        # one-time host prep (linger + tailscale operator)
 pideploy doctor       # confirm every prerequisite is ok
 ```
 
-> `pideploy` orchestrates Docker, Tailscale, and the GitHub CLI — see [Prerequisites & setup](#-prerequisites--setup) to install those once. `pideploy doctor` tells you exactly what's missing.
+> `pideploy` orchestrates Docker, Tailscale, and the GitHub CLI — see [Prerequisites & setup](#-prerequisites--setup). `pideploy doctor` tells you exactly what's missing.
 
-To update later: re-run the one-liner (Option A) or `git pull` (Option B). To uninstall: `rm ~/.local/bin/pideploy` and `pideploy rm` in any repo whose runner you want removed.
+**Update:** re-run the one-liner. **Uninstall:** `rm ~/.local/bin/pideploy` (and `pideploy rm` in any repo whose runner you want removed). See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ---
 
