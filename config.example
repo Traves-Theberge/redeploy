@@ -27,3 +27,9 @@ go_version=1.23
 # Optional: default GitHub Actions secret name a repo's .env is synced to.
 # Leave commented to keep it per-repo (set automatically when a .env exists).
 # dotenv_secret=PIDEPLOY_DOTENV
+
+# REMOTE MODE (set this on a DEV machine, not the host): SSH target of your deploy
+# host. When set, 'pideploy init' registers the runner on the host over SSH and only
+# scaffolds + pushes locally — so you can onboard repos from your laptop. Needs
+# Tailscale SSH (or any SSH) to the host. Leave blank on the host itself.
+# runner_host=you@your-pi

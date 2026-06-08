@@ -362,6 +362,22 @@ Precedence (highest first): **CLI flags → per-repo `.pideploy.conf` → host c
 
 **Onboard any repo to this host in one step:** `pideploy onboard <owner/repo> --port N` (run on the host — clones the repo and inits it, so it deploys here).
 
+### Onboard from your laptop (remote mode)
+
+The runner lives on the host, so enrolling a repo's runner has to *touch* the host once. **Remote mode** automates that over SSH so you never leave your laptop:
+
+```bash
+# on your laptop, once: install pideploy + point it at the host
+pideploy config set runner_host you@your-pi      # any SSH target (Tailscale SSH works great)
+
+# then, per repo, from the laptop:
+cd ~/code/my-app
+pideploy init        # SSHes to the host, registers the runner there, scaffolds + pushes
+git push             # → deploys to the host, forever
+```
+
+In remote mode, `init` runs `pideploy register <repo>` on the host (which assigns the port and returns the label), then only scaffolds and pushes locally — so **no Docker or systemd is needed on your laptop**. The host just needs pideploy installed and SSH reachable (`sudo tailscale set --ssh` enables Tailscale SSH). On a personal GitHub account a runner is still one-per-repo; remote mode just does that host-side enrollment for you over SSH. (A GitHub **org** would let a single runner serve every repo — see the org-runner item in [PLAN.md](PLAN.md).)
+
 ### Many apps, no port collisions
 
 Deploy as many repos to one host as you like — `pideploy` keeps every app on a **distinct, stable port** via a host registry (`~/.pideploy/ports`):

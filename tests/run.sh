@@ -194,7 +194,7 @@ assert_contains "help status: documents deploy_host json" "$($BIN help status)" 
 assert_contains "<cmd> --help routes" "$($BIN serve --help)" "Tailscale"
 assert_contains "-h routes to help"   "$($BIN status -h)" "status"
 # completeness: EVERY dispatchable command resolves to a help section (no gaps)
-for c in init onboard deploy status serve unserve url open logs config ports env rm setup doctor agent skill help version; do
+for c in init register onboard deploy status serve unserve url open logs config ports env rm setup doctor agent skill help version; do
   assert_ok "help section exists: $c" "$BIN help $c"
 done
 assert_fail     "help unknown cmd → error" "$BIN help nope"
@@ -318,6 +318,27 @@ assert_eq "stable: re-init reuses the same port"   "$(portof "$PA")" "8080"
 assert_absent "rm frees the port from registry"    "$(cat "$PIDEPLOY_HOME/ports" 2>/dev/null)" "testuser-appa="
 
 # ════════════════════════════════════════════════════════════════════════════
+grp "Remote mode (init registers the runner on the host over SSH)"
+RMR="$SBOX/remote-app"
+git init -q --bare "$SBOX/remote-app.git" >/dev/null 2>&1
+git init -q "$RMR" >/dev/null 2>&1; git -C "$RMR" remote add origin "$SBOX/remote-app.git" 2>/dev/null
+echo '{"name":"x","scripts":{"start":"true"}}' > "$RMR/package.json"
+echo "runner_host=testuser@pi" > "$RMR/.pideploy.conf"      # enable remote mode, repo-scoped (no global pollution)
+git -C "$RMR" add package.json >/dev/null 2>&1; git -C "$RMR" commit -qm i >/dev/null 2>&1
+git -C "$RMR" branch -M main >/dev/null 2>&1; git -C "$RMR" push -q -u origin main >/dev/null 2>&1
+RM_OUT="$(cd "$RMR" && MOCK_REPO=testuser/remote-app $BIN init 2>&1)"
+assert_contains "remote: announces remote mode"      "$RM_OUT" "remote mode"
+assert_file     "remote: scaffolds the workflow"      "$RMR/.github/workflows/deploy.yml"
+assert_contains "remote: workflow uses host's label"  "$(cat "$RMR/.github/workflows/deploy.yml")" "self-hosted, pideploy"
+assert_contains "remote: port comes from the host"    "$(cat "$RMR/.pideploy.conf")" "default_port=8080"
+assert_contains "remote: pushed"                      "$RM_OUT" "pushed"
+assert_ok "remote: NO local runner registered here"   "[ ! -d '$PIDEPLOY_HOME/runners/testuser-remote-app' ]"
+# the host-side 'register' command (what remote init invokes over SSH) works directly
+assert_struct "register --json shape & types" "$($BIN register testuser/reg-app --json 2>/dev/null)" \
+  "d['runner']=='pi-testuser-reg-app' and isinstance(d['port'],int) and d['label']=='pideploy' and isinstance(d['registered'],bool)"
+assert_exit "register without a repo → usage (2)" "$BIN register" 2
+
+# ════════════════════════════════════════════════════════════════════════════
 grp "Multi-app serve (path-based + --port-mode)"
 # in a repo, the path defaults to /<app_name> so apps don't collide at the root
 assert_contains "serve: default path = /<app_name>" "$(cd "$REPO" && $BIN serve 8080 2>/dev/null)" "test-pi.tailnet.ts.net/testrepo"
@@ -342,6 +363,7 @@ assert_contains "url: falls back to local when not served" "$(cd "$SBOX/fx-repo"
 
 # ════════════════════════════════════════════════════════════════════════════
 grp "Secrets: no leakage"
+rm -f "$PIDEPLOY_HOME/ports"   # isolate from prior groups' port assignments
 SREPO="$SBOX/secret-proj"; mkdir -p "$SREPO" "$SBOX/sremote.git"
 ( cd "$SBOX/sremote.git" && git init -q --bare )
 ( cd "$SREPO" && git init -q && git remote add origin "$SBOX/sremote.git" \

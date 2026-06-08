@@ -183,19 +183,42 @@ cmd_init() {
     --dotenv-secret) dotenv_name="$2"; want_dotenv=yes; shift 2;;
     --no-dotenv) want_dotenv=no; shift;;
     *) usage_err "init: unknown flag: $1";; esac; done
-  need git; need gh; need docker
+  need git; need gh
   local nwo slug app branch; nwo=$(resolve_repo); slug=$(repo_slug "$nwo")
   app="${name:-$(cfg app_name)}"; app="${app:-${nwo##*/}}"
   branch=$(cfg default_branch)
-  # port: explicit (collision-guarded) > recorded for this repo > auto-allocated.
-  # The host-wide registry keeps every app on a distinct, stable port.
-  local recorded; recorded=$(port_reg_get "$slug")
-  if [ -n "$port" ]; then
-    port_in_use "$port" "$slug" "$app" && die "port $port is already in use by another app on this host (omit --port to auto-assign a free one, e.g. $(port_alloc "$slug" "$app"))"
-  elif [ -n "$recorded" ]; then port="$recorded"
-  else port=$(port_alloc "$slug" "$app"); fi
-  port_reg_set "$slug" "$port"
-  log "repo=$nwo app=$app port=$port branch=$branch runner=pi-$slug"
+
+  # The runner lives on the DEPLOY HOST. Resolve port + label + register it:
+  #  - local mode:  this machine IS the host (register here).
+  #  - remote mode: cfg runner_host set -> register on the host over SSH, which
+  #    returns the assigned port + label. init then only scaffolds + pushes, so
+  #    it runs fine on a laptop with no Docker/systemd.
+  local rhost label registered=false; rhost=$(cfg runner_host)
+  if [ -n "$rhost" ]; then
+    need ssh
+    log "registering runner on $rhost over SSH (remote mode)"
+    local reg
+    reg=$(ssh -o BatchMode=yes "$rhost" "bash -lc 'pideploy register $nwo ${port:+--port $port} --json'" 2>/tmp/pd.ssh) \
+      || die "remote registration failed (ssh $rhost): $(tr '\n' ' ' </tmp/pd.ssh | sed 's/  */ /g; s/^ *//'). Ensure Tailscale SSH is on and pideploy is installed on the host."
+    port=$(printf '%s' "$reg" | grep -oE '"port":[0-9]+' | head -1 | cut -d: -f2)
+    label=$(printf '%s' "$reg" | grep -oE '"label":"[^"]*"' | head -1 | cut -d'"' -f4)
+    { [ -n "$port" ] && [ -n "$label" ]; } || die "unexpected response from host: $reg"
+    registered=true
+  else
+    need docker
+    # port: explicit (collision-guarded) > recorded for this repo > auto-allocated.
+    local recorded; recorded=$(port_reg_get "$slug")
+    if [ -n "$port" ]; then
+      port_in_use "$port" "$slug" "$app" && die "port $port is already in use by another app on this host (omit --port to auto-assign a free one, e.g. $(port_alloc "$slug" "$app"))"
+    elif [ -n "$recorded" ]; then port="$recorded"
+    else port=$(port_alloc "$slug" "$app"); fi
+    port_reg_set "$slug" "$port"
+    label=$(cfg runner_label)
+    if runner_register "$nwo" "$slug"; then registered=true; log "runner pi-$slug installed and started"
+    else log "runner pi-$slug already registered"; fi
+    linger_on || warn "linger is OFF; runners stop on logout/reboot (fix: sudo loginctl enable-linger $USER)"
+  fi
+  log "repo=$nwo app=$app port=$port branch=$branch runner=pi-$slug label=$label"
 
   # secrets: a local .env is the source of truth — synced to a GitHub Actions
   # secret, then recreated in the runner's checkout by the deploy workflow.
@@ -242,7 +265,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   deploy:
-    runs-on: [self-hosted, $(cfg runner_label)]
+    runs-on: [self-hosted, $label]
     steps:
       - uses: actions/checkout@v4
 $( ds=$(cfg dotenv_secret); [ -n "$ds" ] && printf '      - name: Provision .env from secret\n        env:\n          DOTENV: ${{ secrets.%s }}\n        run: printf '"'"'%%s'"'"' "$DOTENV" > .env' "$ds" )
@@ -265,24 +288,6 @@ CONF
     printf '\n# pideploy: never commit secrets\n.env\n*.env\n!*.env.example\n' >> .gitignore
     log "updated .gitignore (.env protected)"
   fi
-
-  # runner ------------------------------------------------------------------
-  ensure_template; install_unit
-  local registered=false
-  if systemctl --user is-active --quiet "pideploy-runner@$slug" >/dev/null 2>&1 \
-     || gh api "repos/$nwo/actions/runners" -q '.runners[].name' 2>/dev/null | grep -qx "pi-$slug"; then
-    log "runner pi-$slug already registered"
-  else
-    local rdir="$RUNNERS_DIR/$slug" token
-    rm -rf "$rdir"; mkdir -p "$rdir"; cp -a "$TEMPLATE_DIR/." "$rdir/"
-    token=$(gh api -X POST "repos/$nwo/actions/runners/registration-token" -q .token) || die "registration token failed (need gh 'repo' scope)"
-    ( cd "$rdir" && ./config.sh --unattended --replace --url "https://github.com/$nwo" \
-        --token "$token" --name "pi-$slug" --labels "$(cfg runner_label)" --work _work >/dev/null )
-    systemctl --user enable --now "pideploy-runner@$slug"
-    registered=true
-    log "runner pi-$slug installed and started"
-  fi
-  linger_on || warn "linger is OFF; runners stop on logout/reboot (fix: sudo loginctl enable-linger $USER)"
 
   # publish -----------------------------------------------------------------
   local f to_add=() pushed=false
@@ -308,8 +313,53 @@ CONF
     printf 'repo=%s\napp=%s\nport=%s\nbranch=%s\nrunner=pi-%s\nrunner_registered=%s\npushed=%s\n' \
       "$nwo" "$app" "$port" "$branch" "$slug" "$registered" "$pushed"
   fi
-  [ "$do_serve" = true ] && cmd_serve "$port"
+  if [ "$do_serve" = true ]; then
+    if [ -n "$rhost" ]; then warn "remote mode: expose it on the host with  ssh $rhost 'pideploy serve --port $port'"
+    else cmd_serve "$port"; fi
+  fi
   return 0
+}
+
+# register a self-hosted runner FOR a repo ON THIS HOST (factored from init).
+runner_register() { # nwo slug  -> 0 newly registered · 1 already present
+  local nwo="$1" slug="$2"
+  ensure_template; install_unit
+  if systemctl --user is-active --quiet "pideploy-runner@$slug" >/dev/null 2>&1 \
+     || gh api "repos/$nwo/actions/runners" -q '.runners[].name' 2>/dev/null | grep -qx "pi-$slug"; then
+    return 1
+  fi
+  local rdir="$RUNNERS_DIR/$slug" token
+  rm -rf "$rdir"; mkdir -p "$rdir"; cp -a "$TEMPLATE_DIR/." "$rdir/"
+  token=$(gh api -X POST "repos/$nwo/actions/runners/registration-token" -q .token) || die "registration token failed (need gh 'repo' scope)"
+  ( cd "$rdir" && ./config.sh --unattended --replace --url "https://github.com/$nwo" \
+      --token "$token" --name "pi-$slug" --labels "$(cfg runner_label)" --work _work >/dev/null )
+  systemctl --user enable --now "pideploy-runner@$slug"
+  return 0
+}
+
+cmd_register() { # host-side: register a runner for <owner/repo>; resolve+record its port
+  local nwo="" port=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --port) port="$2"; shift 2;;
+    --*) usage_err "register: unknown flag: $1";;
+    *) [ -z "$nwo" ] && nwo="$1"; shift;;
+  esac; done
+  [ -n "$nwo" ] || usage_err "usage: pideploy register <owner/repo> [--port N]"
+  need gh; need docker
+  local slug app recorded; slug=$(repo_slug "$nwo"); app="${nwo##*/}"; recorded=$(port_reg_get "$slug")
+  if [ -n "$port" ]; then
+    port_in_use "$port" "$slug" "$app" && die "port $port already in use on this host (free: $(port_alloc "$slug" "$app"))"
+  elif [ -n "$recorded" ]; then port="$recorded"
+  else port=$(port_alloc "$slug" "$app"); fi
+  port_reg_set "$slug" "$port"
+  local registered=false
+  if runner_register "$nwo" "$slug"; then registered=true; log "runner pi-$slug installed and started"
+  else log "runner pi-$slug already registered"; fi
+  linger_on || warn "linger is OFF on this host; runners stop on reboot (sudo loginctl enable-linger $USER)"
+  if [ "$FORMAT" = json ]; then
+    printf '{"repo":%s,"runner":%s,"port":%s,"label":%s,"registered":%s}\n' \
+      "$(json_str "$nwo")" "$(json_str "pi-$slug")" "$port" "$(json_str "$(cfg runner_label)")" "$(json_bool "$registered")"
+  else printf 'runner=pi-%s\nport=%s\nlabel=%s\nregistered=%s\n' "$slug" "$port" "$(cfg runner_label)" "$registered"; fi
 }
 
 _serve_fail() { # consume /tmp/pd.err -> well-formed error, exit nonzero
@@ -541,6 +591,12 @@ go_version=1.23
 # Optional: default GitHub Actions secret name a repo's .env is synced to.
 # Leave commented to keep it per-repo (set automatically when a .env exists).
 # dotenv_secret=PIDEPLOY_DOTENV
+
+# REMOTE MODE (set this on a DEV machine, not the host): SSH target of your deploy
+# host. When set, 'pideploy init' registers the runner on the host over SSH and only
+# scaffolds + pushes locally — so you can onboard repos from your laptop. Needs
+# Tailscale SSH (or any SSH) to the host. Leave blank on the host itself.
+# runner_host=you@your-pi
 TPL
 }
 
@@ -643,6 +699,15 @@ The workflow's `runs-on: [self-hosted, <runner_label>]` is a label requirement, 
 an address; GitHub dispatches the job to the matching runner — i.e. this host.
 Move the runner elsewhere and the same push deploys there; the repo is unchanged.
 
+## Local vs remote mode (where init registers the runner)
+- Local (default): run `init` ON the deploy host; it registers the runner there.
+- Remote: set `runner_host=you@host` (config) on a dev machine; `init` SSHes to the
+  host and runs `pideploy register <repo>` there (which assigns the port + returns
+  the label), then only scaffolds + pushes locally. So you can onboard repos from a
+  laptop with no Docker/systemd. The host must have pideploy + SSH (e.g. Tailscale SSH).
+  On a personal GitHub account a runner is still per-repo; remote mode just automates
+  the host-side registration over SSH (an org would let one runner serve all repos).
+
 ## Deploy pipeline (runs on the host for each push to the branch)
 1. `actions/checkout@v4` — clone the repo into the runner workdir.
 2. (if a .env secret is configured) Provision .env: `printf '%s' "$DOTENV" > .env`
@@ -667,6 +732,8 @@ Result: containers run on the host's Docker engine (visible in Portainer);
   register+start the runner, commit & push. Emits repo/app/port/runner/pushed.
 - `pideploy onboard <git-url|owner/repo> [init flags]` — clone the repo onto THIS
   host then init it (registers the runner here so it deploys here). Run on the host.
+- `pideploy register <owner/repo> [--port N] [--json]` — host-side: register a runner
+  for a repo + assign its port. Used by remote-mode init (laptop SSHes here).
 - `pideploy deploy [--json]` — trigger a deploy now.
 - `pideploy status [--json]` — runners, stacks, serve, linger.
 - `pideploy serve [port] [--path /name] [--port-mode] [--json]` — expose a port over
@@ -775,6 +842,12 @@ SECRETS
   .env from that secret on the runner before 'docker compose up'. Re-sync after
   editing .env with 'pideploy env'.
 
+REMOTE MODE
+  Set 'runner_host=you@your-pi' (config) on a dev machine and init registers the
+  runner on the host over SSH, then only scaffolds + pushes locally — so you can
+  onboard repos from your laptop (no Docker/systemd needed there). Needs SSH to the
+  host (e.g. Tailscale SSH) and pideploy installed there.
+
 OUTPUT
   stdout: key=value result (or JSON). stderr: progress (pideploy: ...).
 EXAMPLES
@@ -866,6 +939,15 @@ USAGE   pideploy env [--name NAME]        # default secret: PIDEPLOY_DOTENV (or 
 OUTPUT  stdout: secret=<NAME> (or JSON {secret,repo}); stderr: progress.
 H
 ;;
+    register) cat <<'H'
+pideploy register — (host-side) register a self-hosted runner for a repo on THIS
+host and assign/record its port. Mostly used internally by remote-mode `init`
+(your laptop SSHes here and calls this). You can also run it directly on the host.
+
+USAGE   pideploy register <owner/repo> [--port N] [--json]
+OUTPUT  runner=pi-<owner-repo> · port=<n> · label=<runner_label> · registered=<bool>
+H
+;;
     onboard) cat <<'H'
 pideploy onboard — clone a repo onto THIS host and init it in one step.
 
@@ -894,6 +976,8 @@ USAGE
 HOST KEYS  deploy_host, portainer_url, runner_label, default_port, default_branch,
            auto_serve, prune_images, node_version, python_version, go_version.
 REPO KEYS  app_name, dotenv_secret (written to .pideploy.conf by init).
+DEV KEY    runner_host=you@your-pi — set on a laptop to enable REMOTE MODE: 'init'
+           registers the runner on the host over SSH (onboard repos from anywhere).
 
 SETUP (new host):  pideploy config template > ~/.config/pideploy/config  &&  pideploy config edit
 H
@@ -995,6 +1079,12 @@ portainer_url, defaults). It is reused by every repo onboarded here and lives ou
 any repo, so it never leaks. New host: `pideploy config template > ~/.config/pideploy/config`
 then edit. NEVER commit a real host config or .env — only the placeholder template.
 
+## Local vs remote mode
+Run `init` ON the host (local), or set `runner_host=you@host` on a dev machine for
+REMOTE mode: `init` SSHes to the host, runs `pideploy register <repo>` there to enroll
+the runner + assign the port, then scaffolds + pushes locally. Lets you onboard repos
+from a laptop (no Docker/systemd needed locally). Needs SSH to the host + pideploy there.
+
 ## Output contract (rely on this)
 - Data → STDOUT (`key=value`/rows, or JSON with `--json`). Parse stdout.
 - Progress/warnings/errors → STDERR (`pideploy:`/`warn:`/`error:`). With `--json`,
@@ -1095,6 +1185,7 @@ COMMANDS
   url | open                                print (or open) this app's endpoint URL
   logs [app]                                tail a deployed app's container logs
   config list|get|set|edit|template|path    view/change defaults; 'template' prints a host-config example
+  register <owner/repo>                     (host) register a runner for a repo — used by remote-mode init
   ports                                     list which repo uses which port (host registry)
   env [--name NAME]                         sync local .env -> GitHub Actions secret
   rm                                        remove this repo's runner
@@ -1132,6 +1223,7 @@ main() {
   [ "$want_help" = 1 ] && { [ "$cmd" = help ] && cmd_help || cmd_help "$cmd"; exit 0; }
   case "$cmd" in
     init)    cmd_init    "${args[@]}";;
+    register) cmd_register "${args[@]}";;
     deploy)  cmd_deploy  "${args[@]}";;
     status)  cmd_status  "${args[@]}";;
     serve)   cmd_serve   "${args[@]}";;
