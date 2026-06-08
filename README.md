@@ -20,7 +20,7 @@
 ![ci](https://github.com/Traves-Theberge/pideploy/actions/workflows/ci.yml/badge.svg)
 ![release](https://img.shields.io/github/v/release/Traves-Theberge/pideploy?sort=semver)
 ![shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)
-![tests](https://img.shields.io/badge/tests-218%20hermetic-32CD32)
+![tests](https://img.shields.io/badge/tests-224%20hermetic-32CD32)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![self-hosted](https://img.shields.io/badge/self--hosted-Raspberry%20Pi-C51A4A?logo=raspberrypi&logoColor=white)
 
@@ -166,6 +166,15 @@ Install the GitHub CLI and log in with the scopes `pideploy` needs to register r
 gh auth login                        # choose HTTPS; grant 'repo' + 'workflow' scopes
 gh auth status                       # confirm: should list 'repo' and 'workflow'
 ```
+
+Also set a **real git identity** — `pideploy` commits on your behalf during `init`/`deploy`, and it **refuses to commit** with an unset or generic identity (e.g. `noreply@users.noreply.github.com`), which GitHub mis-attributes to whatever account claimed that address:
+
+```bash
+git config --global user.name  "Your Name"
+git config --global user.email "you@example.com"   # a real address you control
+```
+
+> `pideploy doctor` reports this as the `git-identity` check.
 
 > **Runner scope note.** On a **personal** GitHub account, a self-hosted runner is tied to a single repo — so `pideploy` registers **one runner per repo**. If you have many repos, consider a **free GitHub organization** with an org-level runner (a future `pideploy` mode). Everything works on a personal account today; it's just one runner service per repo.
 

@@ -8,7 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
-## [1.1.0] - 2026-06-07
+## [1.2.0] - 2026-06-08
+
+### Added
+- **Commit-identity guard** — `init` and `deploy` now refuse to commit unless a real
+  git identity is set. A missing, malformed, or **generic** address (notably
+  `noreply@users.noreply.github.com`) is rejected, because GitHub attributes such
+  commits to whatever account has claimed that email — so your commits can show up as
+  a stranger's. Fix: `git config --global user.email you@example.com` (and `user.name`).
+- **`doctor` `git-identity` check** — surfaces the same condition as a FATAL check
+  (text and `--json`), so you catch it before the first commit.
+
+### Notes
+- pideploy has **no package dependencies** (pure Bash); its only CI/build "deps" are
+  pinned GitHub Actions (`actions/checkout@v4`, `actions/setup-python@v5`), both on
+  their latest major versions. Test suite grew to **224** hermetic checks.
 
 ### Added
 - **Remote mode** — set `runner_host=you@host` on a dev machine and `pideploy init`
@@ -58,6 +72,7 @@ per-repo self-hosted GitHub Actions runner builds the repo's image and runs it v
   push/PR. MIT licensed. Verified end-to-end on real hardware (fresh repo → live app →
   push-to-deploy → clean teardown), with no secret leakage in public Actions logs.
 
-[Unreleased]: https://github.com/Traves-Theberge/pideploy/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Traves-Theberge/pideploy/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Traves-Theberge/pideploy/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Traves-Theberge/pideploy/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Traves-Theberge/pideploy/releases/tag/v1.0.0

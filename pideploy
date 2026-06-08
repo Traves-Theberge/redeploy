@@ -10,7 +10,7 @@
 # Full manual for agents:  pideploy --agent
 set -euo pipefail
 
-PIDEPLOY_VERSION="1.1.0"
+PIDEPLOY_VERSION="1.2.0"
 
 # ── paths ───────────────────────────────────────────────────────────────────
 PIDEPLOY_HOME="${PIDEPLOY_HOME:-$HOME/.pideploy}"
@@ -116,6 +116,20 @@ port_alloc() { # [exclude-slug] [exclude-app]  -> lowest free port at/above defa
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1 (run: pideploy doctor)"; }
+# Refuse to commit with a missing or generic/placeholder git identity. A blank or
+# shared address (e.g. noreply@users.noreply.github.com) gets mis-attributed by
+# GitHub to whatever account claimed it — so pin a real identity before committing.
+require_git_identity() {
+  local name email; name=$(git config user.name 2>/dev/null); email=$(git config user.email 2>/dev/null)
+  [ -n "$email" ] || die "git user.email not set — run: git config --global user.email you@example.com" 2
+  [ -n "$name" ]  || die "git user.name not set — run: git config --global user.name 'Your Name'" 2
+  case "$email" in
+    *noreply@users.noreply.github.com)
+      die "refusing to commit as the generic '$email' — GitHub mis-links it to a stranger's account. Set yours: git config --global user.email you@example.com" 2 ;;
+    *@*.*) : ;;  # looks like a real address
+    *) die "git user.email '$email' is not a valid address — run: git config --global user.email you@example.com" 2 ;;
+  esac
+}
 repo_slug() { echo "$1" | tr '[:upper:]/' '[:lower:]-' | sed 's/[^a-z0-9-]/-/g'; }
 resolve_repo() {
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not inside a git repo"
@@ -298,6 +312,7 @@ CONF
   if git diff --cached --quiet 2>/dev/null; then
     log "no changes to commit"
   else
+    require_git_identity
     git commit -q -m "Add pideploy: build & deploy on push"
     if git push -q 2>/dev/null; then pushed=true; log "pushed (first deploy starting)"; else warn "committed but push failed; run: git push"; fi
   fi
@@ -508,6 +523,7 @@ cmd_deploy() {
     [ "$FORMAT" = json ] && printf '{"dispatched":true,"repo":%s}\n' "$(json_str "$nwo")" || printf 'dispatched=true\n'
   else
     warn "workflow_dispatch failed; pushing empty commit"
+    require_git_identity
     git commit -q --allow-empty -m "pideploy: trigger deploy" && git push -q
     log "pushed empty commit"
     [ "$FORMAT" = json ] && printf '{"dispatched":true,"method":"push","repo":%s}\n' "$(json_str "$nwo")" || printf 'dispatched=true\n'
@@ -643,6 +659,7 @@ cmd_doctor() {
     command -v "$b" >/dev/null 2>&1 && add "$b" true || add "$b" false
   done
   gh auth status >/dev/null 2>&1 && add gh-auth true || add gh-auth false
+  { require_git_identity >/dev/null 2>&1; } && add git-identity true || add git-identity false
   id -nG | tr ' ' '\n' | grep -qx docker && add docker-group true || add docker-group false
   systemctl --user is-system-running >/dev/null 2>&1 && add user-systemd true || add user-systemd false
   docker info >/dev/null 2>&1 && add docker-engine true || add docker-engine false
@@ -721,6 +738,10 @@ Result: containers run on the host's Docker engine (visible in Portainer);
 
 ## Prerequisites (verify: `pideploy doctor`, or `pideploy doctor --json`)
 - gh authenticated, scopes `repo` + `workflow`.
+- git identity set to a real address you control — `git config --global user.email`
+  (and `user.name`). `init`/`deploy` refuse to commit with an unset or generic
+  identity (e.g. `noreply@users.noreply.github.com`), which GitHub mis-attributes to
+  whatever account claimed it. `doctor` reports this as `git-identity`.
 - user in `docker` group; user systemd running; docker engine reachable.
 - `sudo loginctl enable-linger $USER` (persist runners) — or run `pideploy setup`.
 - tailscale up; `sudo tailscale set --operator=$USER` (serve without sudo).
@@ -1013,8 +1034,9 @@ H
 pideploy doctor — check every prerequisite; exit 1 if any FATAL check fails.
 
 Checks binaries (git, gh, docker, curl, tar, systemctl, loginctl, tailscale),
-gh auth, docker group membership, user systemd, docker engine, tailscale up,
-and linger. tailscale-up and linger are WARN (non-fatal).
+gh auth, git-identity (a real user.email/name is set), docker group membership,
+user systemd, docker engine, tailscale up, and linger. tailscale-up and linger
+are WARN (non-fatal).
 
 USAGE   pideploy doctor [--json]
 OUTPUT  text: "<check> ok|WARN|FAIL"; --json: {checks:[{name,ok,severity}], ok}
@@ -1096,6 +1118,10 @@ from a laptop (no Docker/systemd needed locally). Needs SSH to the host + pidepl
 ## Rules / directives
 - ALWAYS run `pideploy doctor --json` first and ensure `"ok":true`. If not, run
   `pideploy setup`, then re-check. Do not proceed past FATAL checks.
+- A real git identity MUST be set (`git config --global user.email`/`user.name`).
+  `init`/`deploy` refuse to commit with an unset or generic identity (e.g.
+  `noreply@users.noreply.github.com`) — GitHub mis-attributes such commits to a
+  stranger's account. `doctor` reports it as `git-identity` (FATAL).
 - The repo MUST have a GitHub remote before `init`. If missing, run
   `gh repo create --source=. --private --push` first.
 - Apps MUST listen on the port `init` uses (pass `--port`, or let it auto-assign)

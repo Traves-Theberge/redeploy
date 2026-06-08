@@ -152,7 +152,7 @@ assert_ok   "onboard: cloned the repo onto the host" "[ -d '$SBOX/onboarded/onb/
 assert_file "onboard: ran init (scaffolded Dockerfile)" "$SBOX/onboarded/onb/Dockerfile"
 
 grp "CLI: surface"
-assert_contains "version"       "$($BIN version)" "pideploy 1.1.0"
+assert_contains "version"       "$($BIN version)" "pideploy 1.2.0"
 assert_contains "help commands" "$($BIN help)"    "init"
 assert_contains "help serve"    "$($BIN help)"    "Tailscale"
 assert_fail     "unknown cmd exits nonzero" "$BIN bogus-cmd"
@@ -214,7 +214,21 @@ assert_absent "skill has no PII" "$SK" "@example"
 grp "CLI: doctor & status (mocked env)"
 assert_contains "doctor runs"        "$($BIN doctor 2>&1)" "docker-engine"
 assert_contains "doctor checks gh"   "$($BIN doctor 2>&1)" "gh-auth"
+assert_contains "doctor checks git identity" "$($BIN doctor 2>&1)" "git-identity"
 assert_contains "doctor: passing checks marked ok" "$($BIN doctor 2>&1)" "ok"
+
+# ── git-identity commit guard (the noreply@users.noreply.github.com incident) ──
+grp "Guard: require_git_identity (no bad/generic commit identity)"
+# extract the function from the CLI and exercise it with mocked git/die
+guard_says() { ( eval "$(sed -n '/^require_git_identity()/,/^}/p' "$BIN")"
+  die() { printf 'BLOCKED:%s' "${2:-1}"; return "${2:-1}"; }
+  git() { case "$2" in user.name) printf '%s' "$GN";; user.email) printf '%s' "$GE";; esac; }
+  GN="$1" GE="$2" require_git_identity 2>/dev/null && printf 'ALLOWED' ; ) ; }
+assert_contains "blocks empty email"          "$(guard_says 'X' '')"                                   "BLOCKED:2"
+assert_contains "blocks generic noreply"      "$(guard_says 'pideploy' 'noreply@users.noreply.github.com')" "BLOCKED:2"
+assert_contains "blocks non-address"          "$(guard_says 'X' 'garbage')"                            "BLOCKED:2"
+assert_contains "blocks missing name"         "$(guard_says '' 'real@example.com')"                    "BLOCKED:2"
+assert_contains "allows a real identity"      "$(guard_says 'Real Person' 'real@example.com')"         "ALLOWED"
 assert_contains "status: runner row" "$($BIN status 2>&1)" "runner"
 assert_contains "status: linger row" "$($BIN status 2>&1)" "linger"
 
