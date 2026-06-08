@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [1.1.0] - 2026-06-07
+
+### Added
+- **Remote mode** — set `runner_host=you@host` on a dev machine and `pideploy init`
+  registers the runner on the host **over SSH** (via the new host-side `register`
+  command), then only scaffolds + pushes locally. So you can onboard repos to your
+  Pi **from your laptop** — no Docker or systemd needed there. Needs SSH to the host
+  (e.g. Tailscale SSH) and pideploy installed there. The generated workflow uses the
+  host-resolved runner label; `--serve` in remote mode prints the host-side command.
+- **`pideploy register <owner/repo>`** — host-side: enroll a self-hosted runner for a
+  repo and assign/record its port (returns `runner`/`port`/`label`/`registered`).
+
 ## [1.0.0] - 2026-06-07
 
 First public release. `pideploy` turns any git repo into push-to-deploy on a
@@ -46,5 +58,6 @@ per-repo self-hosted GitHub Actions runner builds the repo's image and runs it v
   push/PR. MIT licensed. Verified end-to-end on real hardware (fresh repo → live app →
   push-to-deploy → clean teardown), with no secret leakage in public Actions logs.
 
-[Unreleased]: https://github.com/Traves-Theberge/pideploy/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Traves-Theberge/pideploy/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Traves-Theberge/pideploy/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Traves-Theberge/pideploy/releases/tag/v1.0.0

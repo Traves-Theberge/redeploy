@@ -18,7 +18,7 @@
 ![ci](https://github.com/Traves-Theberge/pideploy/actions/workflows/ci.yml/badge.svg)
 ![release](https://img.shields.io/github/v/release/Traves-Theberge/pideploy?sort=semver)
 ![shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)
-![tests](https://img.shields.io/badge/tests-209%20hermetic-32CD32)
+![tests](https://img.shields.io/badge/tests-218%20hermetic-32CD32)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![self-hosted](https://img.shields.io/badge/self--hosted-Raspberry%20Pi-C51A4A?logo=raspberrypi&logoColor=white)
 
@@ -31,6 +31,8 @@
 `pideploy` is a single, dependency-light CLI that gives you **your own Heroku/Vercel on hardware you own**. You run one command inside a repo, and from then on every `git push` builds your app and deploys it — privately, over your Tailscale network, visible and manageable in Portainer.
 
 No cloud bill. No exposing ports to the internet. No webhooks poking holes in your network. Just `git push`.
+
+Deploy **many apps to one host** with no port collisions, expose them at distinct Tailscale URLs, and onboard new repos either on the host or **from your laptop over SSH** ([remote mode](#onboard-from-your-laptop-remote-mode)).
 
 The CLI is **plain, non-interactive, and scriptable** — data on stdout, progress on stderr, stable exit codes, and `--json` on every data command. Great for you in a terminal and great for AI agents.
 

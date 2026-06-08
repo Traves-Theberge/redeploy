@@ -10,7 +10,7 @@
 # Full manual for agents:  pideploy --agent
 set -euo pipefail
 
-PIDEPLOY_VERSION="1.0.0"
+PIDEPLOY_VERSION="1.1.0"
 
 # ── paths ───────────────────────────────────────────────────────────────────
 PIDEPLOY_HOME="${PIDEPLOY_HOME:-$HOME/.pideploy}"
@@ -676,7 +676,8 @@ HTTPS. This CLI is plain and non-interactive.
 
 ## Output contract
 - Primary data -> STDOUT. Plain `key=value` or tab-separated rows; add `--json`
-  for structured JSON on: init, status, deploy, serve, config, doctor.
+  for structured JSON on: init, status, deploy, serve, url, ports, config, env,
+  register, doctor.
 - Progress/warnings/errors -> STDERR (`pideploy:` / `warn:` / `error:`). In `--json`
   mode, errors are a JSON object on STDERR: `{"error":"<msg>","code":<N>}`. On any
   error STDOUT stays empty.
@@ -1134,10 +1135,11 @@ from a laptop (no Docker/systemd needed locally). Needs SSH to the host + pidepl
 
 ## Command quick reference
 `setup` host prep · `doctor` prereqs · `config template` host config · `init` set up repo ·
-`onboard <repo>` clone+init on host · `deploy` redeploy now · `status` state ·
-`serve`/`unserve` expose · `url`/`open` app endpoint · `logs` tail · `config` defaults ·
-`ports` port registry · `env` sync .env→secret · `rm` remove runner · `agent` · `skill` · `help <cmd>`.
-Add `--json` to init/status/deploy/serve/config/doctor.
+`onboard <repo>` clone+init on host · `register <repo>` host-side runner enroll (remote mode) ·
+`deploy` redeploy now · `status` state · `serve`/`unserve` expose · `url`/`open` app endpoint ·
+`logs` tail · `config` defaults · `ports` port registry · `env` sync .env→secret · `rm` remove runner ·
+`agent` · `skill` · `help <cmd>`.
+Add `--json` to init/status/deploy/serve/url/ports/config/env/register/doctor.
 SKILL
 }
 
@@ -1154,11 +1156,14 @@ WHAT IT IS
 
 HOW IT WORKS
   'init' scaffolds a Dockerfile/compose/workflow and registers a per-repo,
-  self-hosted GitHub Actions runner on this host. On every push, GitHub Actions
-  runs that runner here; it builds your image and 'docker compose up's it. The
-  runner connects OUTBOUND to GitHub, so this host needs no open ports and works
-  on a tailnet-only network. Portainer shares the Docker engine (sees your apps);
-  'serve' exposes a port over Tailscale with HTTPS.
+  self-hosted GitHub Actions runner on the DEPLOY HOST. On every push, GitHub
+  dispatches the job to that runner — so it always builds and 'docker compose up's
+  ON THE HOST, never on whatever machine you ran the CLI from. The runner connects
+  OUTBOUND to GitHub, so the host needs no open ports and works tailnet-only. Portainer shares the Docker engine (sees your apps);
+  'serve' exposes apps over Tailscale HTTPS (path-based, so many coexist). Each repo
+  gets a distinct, stable port (no collisions). Run 'init' on the host, or from a
+  laptop in REMOTE mode ('config set runner_host you@host') — it then registers the
+  runner on the host over SSH and just scaffolds + pushes.
 
 GETTING STARTED  (do this first)
   1. pideploy setup                      prepare this host (linger + tailscale)  [once]
@@ -1181,7 +1186,8 @@ COMMANDS
   onboard <git-url|owner/repo>              clone a repo onto this host + init it (one step)
   deploy                                    trigger a deploy now (no code change needed)
   status                                    list runners, running stacks, serve, linger
-  serve <port> | unserve <port>             expose / stop exposing a port (Tailscale HTTPS)
+  serve [port] [--path /p] [--port-mode]    expose over Tailscale HTTPS (path-based; many apps coexist)
+  unserve                                   stop exposing one app's route
   url | open                                print (or open) this app's endpoint URL
   logs [app]                                tail a deployed app's container logs
   config list|get|set|edit|template|path    view/change defaults; 'template' prints a host-config example
@@ -1196,7 +1202,7 @@ COMMANDS
   version | help [command]                  version, or detailed help for a command
 
 FLAGS
-  --json    structured output (init, status, deploy, serve, config, doctor)
+  --json    structured output (init, status, deploy, serve, url, ports, config, env, register, doctor)
   --agent   print the agent manual          --skill  print the agent skill
   --yes     accepted (no-op; CLI never prompts)
 

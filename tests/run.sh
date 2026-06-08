@@ -152,7 +152,7 @@ assert_ok   "onboard: cloned the repo onto the host" "[ -d '$SBOX/onboarded/onb/
 assert_file "onboard: ran init (scaffolded Dockerfile)" "$SBOX/onboarded/onb/Dockerfile"
 
 grp "CLI: surface"
-assert_contains "version"       "$($BIN version)" "pideploy 1.0.0"
+assert_contains "version"       "$($BIN version)" "pideploy 1.1.0"
 assert_contains "help commands" "$($BIN help)"    "init"
 assert_contains "help serve"    "$($BIN help)"    "Tailscale"
 assert_fail     "unknown cmd exits nonzero" "$BIN bogus-cmd"
