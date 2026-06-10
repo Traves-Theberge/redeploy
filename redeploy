@@ -1,37 +1,37 @@
 #!/usr/bin/env bash
-# pideploy — deploy any git repo to this host on push; visible in Portainer,
+# redeploy — deploy any git repo to this host on push; visible in Portainer,
 # reachable over Tailscale. Plain, non-interactive, scriptable CLI.
 #
 # Output contract (stable, for scripts & AI agents):
 #   - Primary data goes to STDOUT (plain `key=value`/tabular, or JSON with --json).
-#   - Progress, warnings, errors go to STDERR, prefixed `pideploy:` / `warn:` / `error:`.
+#   - Progress, warnings, errors go to STDERR, prefixed `redeploy:` / `warn:` / `error:`.
 #   - Exit codes: 0 success · 1 runtime error · 2 usage error.
 #   - Never prompts. Reads no interactive input.
-# Full manual for agents:  pideploy --agent
+# Full manual for agents:  redeploy --agent
 set -euo pipefail
 
-PIDEPLOY_VERSION="1.2.0"
+REDEPLOY_VERSION="2.0.0"
 
 # ── paths ───────────────────────────────────────────────────────────────────
-PIDEPLOY_HOME="${PIDEPLOY_HOME:-$HOME/.pideploy}"
-TEMPLATE_DIR="$PIDEPLOY_HOME/runner-template"
-RUNNERS_DIR="$PIDEPLOY_HOME/runners"
-PORTS_FILE="$PIDEPLOY_HOME/ports"   # host-wide registry: <owner-repo>=<port> (no collisions)
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pideploy"
+REDEPLOY_HOME="${REDEPLOY_HOME:-$HOME/.redeploy}"
+TEMPLATE_DIR="$REDEPLOY_HOME/runner-template"
+RUNNERS_DIR="$REDEPLOY_HOME/runners"
+PORTS_FILE="$REDEPLOY_HOME/ports"   # host-wide registry: <owner-repo>=<port> (no collisions)
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/redeploy"
 CONFIG_FILE="$CONFIG_DIR/config"
 UNIT_DIR="$HOME/.config/systemd/user"
-UNIT_NAME="pideploy-runner@.service"
-REPO_CONF=".pideploy.conf"
+UNIT_NAME="redeploy-runner@.service"
+REPO_CONF=".redeploy.conf"
 
 FORMAT=text   # set to 'json' by --json
 
 # ── built-in defaults (overridable by config / repo / flags) ────────────────
-# Host-level settings live in ~/.config/pideploy/config (one config, many repos).
-# Generate a shareable placeholder with: pideploy config template
+# Host-level settings live in ~/.config/redeploy/config (one config, many repos).
+# Generate a shareable placeholder with: redeploy config template
 declare -A CFG=(
   [deploy_host]=""              # friendly name for this target host (e.g. my-pi)
   [portainer_url]=""            # Portainer URL on this host (reference/links; deploy is via compose)
-  [runner_label]=pideploy       # label that routes GitHub Actions jobs to this host's runner
+  [runner_label]=redeploy       # label that routes GitHub Actions jobs to this host's runner
   [default_port]=8080
   [default_branch]=main
   [auto_serve]=false
@@ -44,7 +44,7 @@ declare -A CFG=(
 # ── logging (all to stderr; stdout is reserved for data) ────────────────────
 # Errors are format-aware: plain `error: msg` in text mode, a JSON object in
 # --json mode — always to stderr, with a stable exit code.
-log()  { printf 'pideploy: %s\n' "$*" >&2; }
+log()  { printf 'redeploy: %s\n' "$*" >&2; }
 warn() { printf 'warn: %s\n'     "$*" >&2; }
 emit_err() { # msg [code]
   if [ "$FORMAT" = json ]; then printf '{"error":%s,"code":%s}\n' "$(json_str "$1")" "${2:-1}" >&2
@@ -84,7 +84,7 @@ config_save() {
 # ── port registry (one host, many repos, no collisions) ─────────────────────
 port_reg_get() { [ -f "$PORTS_FILE" ] && awk -F= -v s="$1" '$1==s{print $2; exit}' "$PORTS_FILE" || true; }
 port_reg_set() { # slug port  — upsert
-  local s="$1" p="$2" tmp; mkdir -p "$PIDEPLOY_HOME"; tmp=$(mktemp)
+  local s="$1" p="$2" tmp; mkdir -p "$REDEPLOY_HOME"; tmp=$(mktemp)
   { [ -f "$PORTS_FILE" ] && grep -v "^$s=" "$PORTS_FILE"; printf '%s=%s\n' "$s" "$p"; } > "$tmp" 2>/dev/null || true
   mv "$tmp" "$PORTS_FILE"
 }
@@ -115,7 +115,7 @@ port_alloc() { # [exclude-slug] [exclude-app]  -> lowest free port at/above defa
 }
 
 # ── helpers ─────────────────────────────────────────────────────────────────
-need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1 (run: pideploy doctor)"; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1 (run: redeploy doctor)"; }
 # Refuse to commit with a missing or generic/placeholder git identity. A blank or
 # shared address (e.g. noreply@users.noreply.github.com) gets mis-attributed by
 # GitHub to whatever account claimed it — so pin a real identity before committing.
@@ -161,13 +161,13 @@ install_unit() {
   mkdir -p "$UNIT_DIR"
   cat > "$UNIT_DIR/$UNIT_NAME" <<'UNIT'
 [Unit]
-Description=pideploy GitHub Actions runner (%i)
+Description=redeploy GitHub Actions runner (%i)
 After=network-online.target docker.service
 Wants=network-online.target
 [Service]
 Type=simple
-WorkingDirectory=%h/.pideploy/runners/%i
-ExecStart=%h/.pideploy/runners/%i/run.sh
+WorkingDirectory=%h/.redeploy/runners/%i
+ExecStart=%h/.redeploy/runners/%i/run.sh
 Restart=always
 RestartSec=5
 KillMode=process
@@ -212,8 +212,8 @@ cmd_init() {
     need ssh
     log "registering runner on $rhost over SSH (remote mode)"
     local reg
-    reg=$(ssh -o BatchMode=yes "$rhost" "bash -lc 'pideploy register $nwo ${port:+--port $port} --json'" 2>/tmp/pd.ssh) \
-      || die "remote registration failed (ssh $rhost): $(tr '\n' ' ' </tmp/pd.ssh | sed 's/  */ /g; s/^ *//'). Ensure Tailscale SSH is on and pideploy is installed on the host."
+    reg=$(ssh -o BatchMode=yes "$rhost" "bash -lc 'redeploy register $nwo ${port:+--port $port} --json'" 2>/tmp/pd.ssh) \
+      || die "remote registration failed (ssh $rhost): $(tr '\n' ' ' </tmp/pd.ssh | sed 's/  */ /g; s/^ *//'). Ensure Tailscale SSH is on and redeploy is installed on the host."
     port=$(printf '%s' "$reg" | grep -oE '"port":[0-9]+' | head -1 | cut -d: -f2)
     label=$(printf '%s' "$reg" | grep -oE '"label":"[^"]*"' | head -1 | cut -d'"' -f4)
     { [ -n "$port" ] && [ -n "$label" ]; } || die "unexpected response from host: $reg"
@@ -228,17 +228,17 @@ cmd_init() {
     else port=$(port_alloc "$slug" "$app"); fi
     port_reg_set "$slug" "$port"
     label=$(cfg runner_label)
-    if runner_register "$nwo" "$slug"; then registered=true; log "runner pi-$slug installed and started"
-    else log "runner pi-$slug already registered"; fi
+    if runner_register "$nwo" "$slug"; then registered=true; log "runner rd-$slug installed and started"
+    else log "runner rd-$slug already registered"; fi
     linger_on || warn "linger is OFF; runners stop on logout/reboot (fix: sudo loginctl enable-linger $USER)"
   fi
-  log "repo=$nwo app=$app port=$port branch=$branch runner=pi-$slug label=$label"
+  log "repo=$nwo app=$app port=$port branch=$branch runner=rd-$slug label=$label"
 
   # secrets: a local .env is the source of truth — synced to a GitHub Actions
   # secret, then recreated in the runner's checkout by the deploy workflow.
   local dotenv_secret=""
   if [ "$want_dotenv" != no ] && [ -f .env ]; then
-    dotenv_secret="${dotenv_name:-$(cfg dotenv_secret)}"; dotenv_secret="${dotenv_secret:-PIDEPLOY_DOTENV}"
+    dotenv_secret="${dotenv_name:-$(cfg dotenv_secret)}"; dotenv_secret="${dotenv_secret:-REDEPLOY_DOTENV}"
     CFG[dotenv_secret]="$dotenv_secret"
     if gh secret set "$dotenv_secret" --repo "$nwo" < .env 2>/dev/null; then
       log "synced .env -> GitHub secret $dotenv_secret (source of truth: .env)"
@@ -290,7 +290,7 @@ YML
   files+=(.github/workflows/deploy.yml)
   log "wrote .github/workflows/deploy.yml"
   cat > "$REPO_CONF" <<CONF
-# pideploy per-repo config — safe to commit (NO secrets here).
+# redeploy per-repo config — safe to commit (NO secrets here).
 app_name=$app
 default_port=$port
 default_branch=$branch
@@ -299,7 +299,7 @@ CONF
   files+=("$REPO_CONF")
   log "wrote $REPO_CONF"
   if ! { [ -f .gitignore ] && grep -qE '^\.env$|^\*\.env$|^\.env\*' .gitignore; }; then
-    printf '\n# pideploy: never commit secrets\n.env\n*.env\n!*.env.example\n' >> .gitignore
+    printf '\n# redeploy: never commit secrets\n.env\n*.env\n!*.env.example\n' >> .gitignore
     log "updated .gitignore (.env protected)"
   fi
 
@@ -313,7 +313,7 @@ CONF
     log "no changes to commit"
   else
     require_git_identity
-    git commit -q -m "Add pideploy: build & deploy on push"
+    git commit -q -m "Add redeploy: build & deploy on push"
     if git push -q 2>/dev/null; then pushed=true; log "pushed (first deploy starting)"; else warn "committed but push failed; run: git push"; fi
   fi
 
@@ -323,13 +323,13 @@ CONF
     for f in "${files[@]}"; do jf+="$sep$(json_str "$f")"; sep=,; done
     printf '{"repo":%s,"app":%s,"port":%s,"branch":%s,"runner":%s,"runner_registered":%s,"pushed":%s,"files":[%s]}\n' \
       "$(json_str "$nwo")" "$(json_str "$app")" "$port" "$(json_str "$branch")" \
-      "$(json_str "pi-$slug")" "$(json_bool "$registered")" "$(json_bool "$pushed")" "$jf"
+      "$(json_str "rd-$slug")" "$(json_bool "$registered")" "$(json_bool "$pushed")" "$jf"
   else
-    printf 'repo=%s\napp=%s\nport=%s\nbranch=%s\nrunner=pi-%s\nrunner_registered=%s\npushed=%s\n' \
+    printf 'repo=%s\napp=%s\nport=%s\nbranch=%s\nrunner=rd-%s\nrunner_registered=%s\npushed=%s\n' \
       "$nwo" "$app" "$port" "$branch" "$slug" "$registered" "$pushed"
   fi
   if [ "$do_serve" = true ]; then
-    if [ -n "$rhost" ]; then warn "remote mode: expose it on the host with  ssh $rhost 'pideploy serve --port $port'"
+    if [ -n "$rhost" ]; then warn "remote mode: expose it on the host with  ssh $rhost 'redeploy serve --port $port'"
     else cmd_serve "$port"; fi
   fi
   return 0
@@ -339,16 +339,16 @@ CONF
 runner_register() { # nwo slug  -> 0 newly registered · 1 already present
   local nwo="$1" slug="$2"
   ensure_template; install_unit
-  if systemctl --user is-active --quiet "pideploy-runner@$slug" >/dev/null 2>&1 \
-     || gh api "repos/$nwo/actions/runners" -q '.runners[].name' 2>/dev/null | grep -qx "pi-$slug"; then
+  if systemctl --user is-active --quiet "redeploy-runner@$slug" >/dev/null 2>&1 \
+     || gh api "repos/$nwo/actions/runners" -q '.runners[].name' 2>/dev/null | grep -qx "rd-$slug"; then
     return 1
   fi
   local rdir="$RUNNERS_DIR/$slug" token
   rm -rf "$rdir"; mkdir -p "$rdir"; cp -a "$TEMPLATE_DIR/." "$rdir/"
   token=$(gh api -X POST "repos/$nwo/actions/runners/registration-token" -q .token) || die "registration token failed (need gh 'repo' scope)"
   ( cd "$rdir" && ./config.sh --unattended --replace --url "https://github.com/$nwo" \
-      --token "$token" --name "pi-$slug" --labels "$(cfg runner_label)" --work _work >/dev/null )
-  systemctl --user enable --now "pideploy-runner@$slug"
+      --token "$token" --name "rd-$slug" --labels "$(cfg runner_label)" --work _work >/dev/null )
+  systemctl --user enable --now "redeploy-runner@$slug"
   return 0
 }
 
@@ -359,7 +359,7 @@ cmd_register() { # host-side: register a runner for <owner/repo>; resolve+record
     --*) usage_err "register: unknown flag: $1";;
     *) [ -z "$nwo" ] && nwo="$1"; shift;;
   esac; done
-  [ -n "$nwo" ] || usage_err "usage: pideploy register <owner/repo> [--port N]"
+  [ -n "$nwo" ] || usage_err "usage: redeploy register <owner/repo> [--port N]"
   need gh; need docker
   local slug app recorded; slug=$(repo_slug "$nwo"); app="${nwo##*/}"; recorded=$(port_reg_get "$slug")
   if [ -n "$port" ]; then
@@ -368,13 +368,13 @@ cmd_register() { # host-side: register a runner for <owner/repo>; resolve+record
   else port=$(port_alloc "$slug" "$app"); fi
   port_reg_set "$slug" "$port"
   local registered=false
-  if runner_register "$nwo" "$slug"; then registered=true; log "runner pi-$slug installed and started"
-  else log "runner pi-$slug already registered"; fi
+  if runner_register "$nwo" "$slug"; then registered=true; log "runner rd-$slug installed and started"
+  else log "runner rd-$slug already registered"; fi
   linger_on || warn "linger is OFF on this host; runners stop on reboot (sudo loginctl enable-linger $USER)"
   if [ "$FORMAT" = json ]; then
     printf '{"repo":%s,"runner":%s,"port":%s,"label":%s,"registered":%s}\n' \
-      "$(json_str "$nwo")" "$(json_str "pi-$slug")" "$port" "$(json_str "$(cfg runner_label)")" "$(json_bool "$registered")"
-  else printf 'runner=pi-%s\nport=%s\nlabel=%s\nregistered=%s\n' "$slug" "$port" "$(cfg runner_label)" "$registered"; fi
+      "$(json_str "$nwo")" "$(json_str "rd-$slug")" "$port" "$(json_str "$(cfg runner_label)")" "$(json_bool "$registered")"
+  else printf 'runner=rd-%s\nport=%s\nlabel=%s\nregistered=%s\n' "$slug" "$port" "$(cfg runner_label)" "$registered"; fi
 }
 
 _serve_fail() { # consume /tmp/pd.err -> well-formed error, exit nonzero
@@ -399,7 +399,7 @@ cmd_serve() {
   esac; done
   need tailscale
   [ -n "$port" ] || port=$(cfg default_port)
-  [ -n "$port" ] || usage_err "usage: pideploy serve [port] [--path /name] [--port-mode]"
+  [ -n "$port" ] || usage_err "usage: redeploy serve [port] [--path /name] [--port-mode]"
   local host url; host=$(tailnet_host)
 
   if [ "$port_mode" = true ]; then
@@ -451,7 +451,7 @@ cmd_url() { # print the endpoint for the current repo's app (served URL, else lo
   local open=false; [ "${1:-}" = "--open" ] && open=true
   local host port app served_path="" url="" local_url
   host=$(tailnet_host); port=$(cfg default_port); app=$(cfg app_name)
-  [ -n "$port" ] || die "no port known — run inside a repo (with .pideploy.conf) or 'pideploy ports'"
+  [ -n "$port" ] || die "no port known — run inside a repo (with .redeploy.conf) or 'redeploy ports'"
   local_url="http://127.0.0.1:$port/"
   # is this app's port currently served over Tailscale? find its path
   served_path=$(tailscale serve status 2>/dev/null | awk -v p="127.0.0.1:$port" '$0 ~ p {for(i=1;i<=NF;i++) if(substr($i,1,1)=="/"){print $i; exit}}')
@@ -462,7 +462,7 @@ cmd_url() { # print the endpoint for the current repo's app (served URL, else lo
       "$(json_str "${url:-}")" "$(json_str "${served_path:-}")"
   else
     if [ -n "$url" ]; then printf '%s\n' "$url"
-    else printf '%s\n' "$local_url"; warn "not exposed over Tailscale yet — run: pideploy serve"; fi
+    else printf '%s\n' "$local_url"; warn "not exposed over Tailscale yet — run: redeploy serve"; fi
   fi
   [ "$open" = true ] && [ -n "${url:-}" ] && command -v xdg-open >/dev/null 2>&1 && xdg-open "$url" >/dev/null 2>&1 || true
   return 0
@@ -476,7 +476,7 @@ cmd_status() {
   if [ -d "$RUNNERS_DIR" ] && compgen -G "$RUNNERS_DIR/*" >/dev/null; then
     local d s
     for d in "$RUNNERS_DIR"/*/; do s=$(basename "$d"); rnames+=("$s")
-      if systemctl --user is-active --quiet "pideploy-runner@$s" >/dev/null 2>&1; then ractive+=(true); else ractive+=(false); fi
+      if systemctl --user is-active --quiet "redeploy-runner@$s" >/dev/null 2>&1; then ractive+=(true); else ractive+=(false); fi
     done
   fi
   local line
@@ -524,7 +524,7 @@ cmd_deploy() {
   else
     warn "workflow_dispatch failed; pushing empty commit"
     require_git_identity
-    git commit -q --allow-empty -m "pideploy: trigger deploy" && git push -q
+    git commit -q --allow-empty -m "redeploy: trigger deploy" && git push -q
     log "pushed empty commit"
     [ "$FORMAT" = json ] && printf '{"dispatched":true,"method":"push","repo":%s}\n' "$(json_str "$nwo")" || printf 'dispatched=true\n'
   fi
@@ -536,7 +536,7 @@ cmd_env() { # sync local .env (source of truth) to a GitHub Actions secret
   need gh
   local nwo; nwo=$(resolve_repo)
   [ -f .env ] || die "no .env in this repo (the source of truth for secrets)"
-  local secret="${name:-$(cfg dotenv_secret)}"; secret="${secret:-PIDEPLOY_DOTENV}"
+  local secret="${name:-$(cfg dotenv_secret)}"; secret="${secret:-REDEPLOY_DOTENV}"
   gh secret set "$secret" --repo "$nwo" < .env || die "gh secret set failed (need admin on $nwo)"
   log "synced .env -> GitHub secret $secret for $nwo"
   if [ "$FORMAT" = json ]; then printf '{"secret":%s,"repo":%s}\n' "$(json_str "$secret")" "$(json_str "$nwo")"
@@ -544,10 +544,10 @@ cmd_env() { # sync local .env (source of truth) to a GitHub Actions secret
 }
 
 cmd_onboard() { # clone a repo onto this host and run init (= add it to the pipeline)
-  local url="${1:-}"; [ -n "$url" ] || usage_err "usage: pideploy onboard <git-url|owner/repo> [init flags]"
+  local url="${1:-}"; [ -n "$url" ] || usage_err "usage: redeploy onboard <git-url|owner/repo> [init flags]"
   shift
   need git; need gh
-  local base="${PIDEPLOY_REPOS:-$HOME/pideploy-repos}"; mkdir -p "$base"
+  local base="${REDEPLOY_REPOS:-$HOME/redeploy-repos}"; mkdir -p "$base"
   local name dest; name=$(basename "${url%.git}"); dest="$base/$name"
   if [ -d "$dest/.git" ]; then log "repo present at $dest (pulling)"; git -C "$dest" pull -q --ff-only 2>/dev/null || true
   else log "cloning $url -> $dest"
@@ -566,8 +566,8 @@ cmd_config() {
       else
         local k; for k in $(printf '%s\n' "${!CFG[@]}" | sort); do printf '%s=%s\n' "$k" "${CFG[$k]}"; done
       fi ;;
-    get) [ -n "${1:-}" ] || usage_err "usage: pideploy config get <key>"; printf '%s\n' "$(cfg "$1")" ;;
-    set) [ -n "${1:-}" ] && [ -n "${2:-}" ] || usage_err "usage: pideploy config set <key> <value>"
+    get) [ -n "${1:-}" ] || usage_err "usage: redeploy config get <key>"; printf '%s\n' "$(cfg "$1")" ;;
+    set) [ -n "${1:-}" ] && [ -n "${2:-}" ] || usage_err "usage: redeploy config set <key> <value>"
          CFG[$1]="$2"; config_save; log "set $1=$2" ;;
     edit) mkdir -p "$CONFIG_DIR"; [ -f "$CONFIG_FILE" ] || config_save; "${EDITOR:-nano}" "$CONFIG_FILE" ;;
     template) config_template ;;
@@ -578,22 +578,22 @@ cmd_config() {
 
 config_template() { # emit a shareable, placeholder host config (NO real values)
   cat <<'TPL'
-# pideploy host config — copy to ~/.config/pideploy/config and fill in your values.
+# redeploy host config — copy to ~/.config/redeploy/config and fill in your values.
 # Scoped to THIS host; reused by every repo you onboard here.
 # SAFE TO SHARE only as this placeholder template — never commit real values.
 
-# A friendly name for this deploy target (shown in `pideploy status`).
+# A friendly name for this deploy target (shown in `redeploy status`).
 deploy_host=
 
 # Label that routes GitHub Actions jobs to THIS host's runner. Use a unique
 # value (e.g. my-pi) if more than one host serves the same repos.
-runner_label=pideploy
+runner_label=redeploy
 
-# Portainer URL on this host (for reference/links in `pideploy status`).
+# Portainer URL on this host (for reference/links in `redeploy status`).
 # Deploys run via `docker compose`; Portainer sees them on the shared engine.
 portainer_url=
 
-# Defaults applied to every repo you onboard (override per-repo in .pideploy.conf).
+# Defaults applied to every repo you onboard (override per-repo in .redeploy.conf).
 default_port=8080
 default_branch=main
 auto_serve=false
@@ -606,10 +606,10 @@ go_version=1.23
 
 # Optional: default GitHub Actions secret name a repo's .env is synced to.
 # Leave commented to keep it per-repo (set automatically when a .env exists).
-# dotenv_secret=PIDEPLOY_DOTENV
+# dotenv_secret=REDEPLOY_DOTENV
 
 # REMOTE MODE (set this on a DEV machine, not the host): SSH target of your deploy
-# host. When set, 'pideploy init' registers the runner on the host over SSH and only
+# host. When set, 'redeploy init' registers the runner on the host over SSH and only
 # scaffolds + pushes locally — so you can onboard repos from your laptop. Needs
 # Tailscale SSH (or any SSH) to the host. Leave blank on the host itself.
 # runner_host=you@your-pi
@@ -618,7 +618,7 @@ TPL
 
 cmd_rm() {
   local nwo slug; nwo=$(resolve_repo); slug=$(repo_slug "$nwo")
-  systemctl --user disable --now "pideploy-runner@$slug" 2>/dev/null || true
+  systemctl --user disable --now "redeploy-runner@$slug" 2>/dev/null || true
   local rdir="$RUNNERS_DIR/$slug" token
   if [ -x "$rdir/config.sh" ]; then
     token=$(gh api -X POST "repos/$nwo/actions/runners/remove-token" -q .token 2>/dev/null || true)
@@ -626,8 +626,8 @@ cmd_rm() {
   fi
   rm -rf "$rdir"
   port_reg_del "$slug"   # free its port for reuse
-  log "removed runner pi-$slug (workflow file kept in repo)"
-  printf 'removed=pi-%s\n' "$slug"
+  log "removed runner rd-$slug (workflow file kept in repo)"
+  printf 'removed=rd-%s\n' "$slug"
 }
 
 cmd_ports() { # list the host port registry (which repo uses which port)
@@ -648,7 +648,7 @@ cmd_setup() {
   else warn "linger: run manually -> sudo loginctl enable-linger $USER"; fi
   if sudo -n tailscale set --operator="$USER" 2>/dev/null; then log "tailscale operator: set to $USER"
   else warn "tailscale operator: run manually -> sudo tailscale set --operator=$USER"; fi
-  log "now run: pideploy doctor"
+  log "now run: redeploy doctor"
 }
 
 cmd_doctor() {
@@ -681,10 +681,64 @@ cmd_doctor() {
   [ "$allok" = true ] || return 1
 }
 
+# ── self-update ──────────────────────────────────────────────────────────────
+REDEPLOY_REPO="${REDEPLOY_REPO:-Traves-Theberge/redeploy}"
+_latest_version() { # print latest release tag (no leading v), or empty
+  local v=""
+  command -v gh >/dev/null 2>&1 && v=$(gh api "repos/$REDEPLOY_REPO/releases/latest" -q .tag_name 2>/dev/null || true)
+  [ -n "$v" ] || v=$(curl -fsSL "https://api.github.com/repos/$REDEPLOY_REPO/releases/latest" 2>/dev/null \
+    | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' | head -1 | cut -d'"' -f4)
+  printf '%s' "${v#v}"
+}
+_self_path() { # absolute path of the installed redeploy this process is running from
+  local s; s=$(command -v redeploy 2>/dev/null || true); [ -n "$s" ] || s="$0"
+  readlink -f "$s" 2>/dev/null || printf '%s' "$s"
+}
+cmd_update() { # fetch the latest released redeploy and replace this binary in place
+  local check=false
+  while [ $# -gt 0 ]; do case "$1" in
+    --check) check=true; shift;;
+    --*) usage_err "update: unknown flag: $1";;
+    *)   usage_err "update: unexpected argument: $1";;
+  esac; done
+  need curl
+  local cur="$REDEPLOY_VERSION" latest target
+  latest=$(_latest_version); [ -n "$latest" ] || die "could not determine the latest release of $REDEPLOY_REPO"
+  target=$(_self_path)
+
+  if [ "$check" = true ] || [ "$latest" = "$cur" ]; then
+    local utd=true; [ "$latest" = "$cur" ] || utd=false
+    if [ "$FORMAT" = json ]; then
+      printf '{"current":%s,"latest":%s,"up_to_date":%s,"path":%s}\n' \
+        "$(json_str "$cur")" "$(json_str "$latest")" "$(json_bool "$utd")" "$(json_str "$target")"
+    elif [ "$utd" = true ]; then printf 'redeploy %s (up to date)\n' "$cur"
+    else printf 'current=%s\nlatest=%s\n' "$cur" "$latest"; warn "run 'redeploy update' to upgrade"; fi
+    { [ "$check" = true ] || [ "$utd" = true ]; } && return 0
+  fi
+
+  log "updating redeploy $cur -> $latest"
+  local url="https://github.com/$REDEPLOY_REPO/releases/download/v${latest}/redeploy" tmp
+  tmp=$(mktemp)
+  curl -fsSL -o "$tmp" "$url" \
+    || curl -fsSL -o "$tmp" "https://raw.githubusercontent.com/$REDEPLOY_REPO/main/redeploy" \
+    || { rm -f "$tmp"; die "download failed (tried release v$latest and main): $url"; }
+  # validate it really is a redeploy binary before clobbering the installed one
+  { head -1 "$tmp" | grep -q '^#!/usr/bin/env bash'; } && grep -q 'REDEPLOY_VERSION=' "$tmp" \
+    || { rm -f "$tmp"; die "downloaded file failed validation — not replacing $target"; }
+  chmod +x "$tmp"
+  if [ -w "$target" ] || [ -w "$(dirname "$target")" ]; then mv "$tmp" "$target"
+  elif command -v sudo >/dev/null 2>&1 && sudo mv "$tmp" "$target"; then :
+  else rm -f "$tmp"; die "cannot write $target (try: sudo redeploy update)"; fi
+  local newv; newv=$("$target" version 2>/dev/null | awk '{print $2}')
+  if [ "$FORMAT" = json ]; then
+    printf '{"updated":true,"from":%s,"to":%s,"path":%s}\n' "$(json_str "$cur")" "$(json_str "${newv:-$latest}")" "$(json_str "$target")"
+  else printf 'updated=%s->%s\npath=%s\n' "$cur" "${newv:-$latest}" "$target"; fi
+}
+
 # ── agent manual ─────────────────────────────────────────────────────────────
 cmd_agent() {
   cat <<'AGENT'
-# pideploy — Agent Operating Manual
+# redeploy — Agent Operating Manual
 
 Deploys any git repo to this host: on every push, a self-hosted GitHub Actions
 runner builds the repo's Docker image and runs it via docker compose. Containers
@@ -694,8 +748,8 @@ HTTPS. This CLI is plain and non-interactive.
 ## Output contract
 - Primary data -> STDOUT. Plain `key=value` or tab-separated rows; add `--json`
   for structured JSON on: init, status, deploy, serve, url, ports, config, env,
-  register, doctor.
-- Progress/warnings/errors -> STDERR (`pideploy:` / `warn:` / `error:`). In `--json`
+  register, doctor, update.
+- Progress/warnings/errors -> STDERR (`redeploy:` / `warn:` / `error:`). In `--json`
   mode, errors are a JSON object on STDERR: `{"error":"<msg>","code":<N>}`. On any
   error STDOUT stays empty.
 - Exit codes: 0 ok · 1 runtime error · 2 usage error.
@@ -703,11 +757,11 @@ HTTPS. This CLI is plain and non-interactive.
 
 ## Architecture
 - One self-hosted runner per repo, as user systemd service
-  `pideploy-runner@<owner-repo>` (no root; needs `loginctl enable-linger` once).
+  `redeploy-runner@<owner-repo>` (no root; needs `loginctl enable-linger` once).
 - Runner connects OUTBOUND to GitHub, so the host needs no inbound ports and
   works tailnet-only. GitHub webhooks cannot reach it — do not use them.
 - Deploys run `docker compose up -d --build`; Portainer shares the Docker engine.
-- Exposure: `pideploy serve` (Tailscale HTTPS); apps bind 127.0.0.1 only. Many apps
+- Exposure: `redeploy serve` (Tailscale HTTPS); apps bind 127.0.0.1 only. Many apps
   coexist via distinct paths on https://<host>/ (see "Exposing multiple apps").
 
 ## How the deploy is routed (no address/SSH — label matching)
@@ -720,9 +774,9 @@ Move the runner elsewhere and the same push deploys there; the repo is unchanged
 ## Local vs remote mode (where init registers the runner)
 - Local (default): run `init` ON the deploy host; it registers the runner there.
 - Remote: set `runner_host=you@host` (config) on a dev machine; `init` SSHes to the
-  host and runs `pideploy register <repo>` there (which assigns the port + returns
+  host and runs `redeploy register <repo>` there (which assigns the port + returns
   the label), then only scaffolds + pushes locally. So you can onboard repos from a
-  laptop with no Docker/systemd. The host must have pideploy + SSH (e.g. Tailscale SSH).
+  laptop with no Docker/systemd. The host must have redeploy + SSH (e.g. Tailscale SSH).
   On a personal GitHub account a runner is still per-repo; remote mode just automates
   the host-side registration over SSH (an org would let one runner serve all repos).
 
@@ -734,95 +788,97 @@ Move the runner elsewhere and the same push deploys there; the repo is unchanged
 4. `docker image prune -f` (if prune_images) — drop dangling layers.
 5. (if .env secret) Remove provisioned .env with `if: always()`.
 Result: containers run on the host's Docker engine (visible in Portainer);
-`pideploy serve <port>` exposes one over Tailscale HTTPS.
+`redeploy serve <port>` exposes one over Tailscale HTTPS.
 
-## Prerequisites (verify: `pideploy doctor`, or `pideploy doctor --json`)
+## Prerequisites (verify: `redeploy doctor`, or `redeploy doctor --json`)
 - gh authenticated, scopes `repo` + `workflow`.
 - git identity set to a real address you control — `git config --global user.email`
   (and `user.name`). `init`/`deploy` refuse to commit with an unset or generic
   identity (e.g. `noreply@users.noreply.github.com`), which GitHub mis-attributes to
   whatever account claimed it. `doctor` reports this as `git-identity`.
 - user in `docker` group; user systemd running; docker engine reachable.
-- `sudo loginctl enable-linger $USER` (persist runners) — or run `pideploy setup`.
+- `sudo loginctl enable-linger $USER` (persist runners) — or run `redeploy setup`.
 - tailscale up; `sudo tailscale set --operator=$USER` (serve without sudo).
 
 ## Commands
-- `pideploy setup` — best-effort one-time host prep (linger, tailscale operator).
-- `pideploy doctor [--json]` — prerequisite check; exit 1 if any fatal check fails.
-- `pideploy init [--port N] [--name NAME] [--serve] [--json]` — in a git repo with
-  a GitHub remote: scaffold Dockerfile/compose/workflow + `.pideploy.conf`,
+- `redeploy setup` — best-effort one-time host prep (linger, tailscale operator).
+- `redeploy doctor [--json]` — prerequisite check; exit 1 if any fatal check fails.
+- `redeploy init [--port N] [--name NAME] [--serve] [--json]` — in a git repo with
+  a GitHub remote: scaffold Dockerfile/compose/workflow + `.redeploy.conf`,
   register+start the runner, commit & push. Emits repo/app/port/runner/pushed.
-- `pideploy onboard <git-url|owner/repo> [init flags]` — clone the repo onto THIS
+- `redeploy onboard <git-url|owner/repo> [init flags]` — clone the repo onto THIS
   host then init it (registers the runner here so it deploys here). Run on the host.
-- `pideploy register <owner/repo> [--port N] [--json]` — host-side: register a runner
+- `redeploy register <owner/repo> [--port N] [--json]` — host-side: register a runner
   for a repo + assign its port. Used by remote-mode init (laptop SSHes here).
-- `pideploy deploy [--json]` — trigger a deploy now.
-- `pideploy status [--json]` — runners, stacks, serve, linger.
-- `pideploy serve [port] [--path /name] [--port-mode] [--json]` — expose a port over
+- `redeploy deploy [--json]` — trigger a deploy now.
+- `redeploy status [--json]` — runners, stacks, serve, linger.
+- `redeploy serve [port] [--path /name] [--port-mode] [--json]` — expose a port over
   Tailscale HTTPS; prints the URL on stdout. Path-based by default (many apps coexist).
-- `pideploy unserve [port] [--path /name] [--port-mode]` — remove one app's route.
-- `pideploy url [--json]` / `pideploy open` — print (or open) THIS repo's app endpoint:
+- `redeploy unserve [port] [--path /name] [--port-mode]` — remove one app's route.
+- `redeploy url [--json]` / `redeploy open` — print (or open) THIS repo's app endpoint:
   the served https URL if exposed, else the local http://127.0.0.1:<port>/.
-- `pideploy logs [app]` — exec `docker logs -f` (stdout passthrough).
-- `pideploy config [list|get <k>|set <k> <v>|edit] [--json]` — manage defaults.
-- `pideploy ports [--json]` — list the host port registry (repo→port).
-- `pideploy env [--name NAME] [--json]` — sync local .env to a GitHub Actions secret.
-- `pideploy rm` — deregister this repo's runner.
-- `pideploy skill` — print a Claude Code skill for this CLI (also: `--skill`).
-- `pideploy help [command]` — overview, or detailed help + options for one command.
-- `pideploy version` · `pideploy --agent` (print this manual).
+- `redeploy logs [app]` — exec `docker logs -f` (stdout passthrough).
+- `redeploy config [list|get <k>|set <k> <v>|edit] [--json]` — manage defaults.
+- `redeploy ports [--json]` — list the host port registry (repo→port).
+- `redeploy env [--name NAME] [--json]` — sync local .env to a GitHub Actions secret.
+- `redeploy rm` — deregister this repo's runner.
+- `redeploy update [--check] [--json]` — upgrade this CLI to the latest release
+  (validates the download before replacing the installed binary in place).
+- `redeploy skill` — print a Claude Code skill for this CLI (also: `--skill`).
+- `redeploy help [command]` — overview, or detailed help + options for one command.
+- `redeploy version` · `redeploy --agent` (print this manual).
 
 Global flags: `--json` (structured output), `--agent` (this manual), `--skill`
 (the skill), `--yes` (accepted, no-op).
 
 ## Config & precedence
-Flags > per-repo `.pideploy.conf` > HOST config `$XDG_CONFIG_HOME/pideploy/config` > built-in.
+Flags > per-repo `.redeploy.conf` > HOST config `$XDG_CONFIG_HOME/redeploy/config` > built-in.
 The HOST config is global to this machine and reused by every repo onboarded here
 (one config, many repos). It lives OUTSIDE any repo, so it never leaks. Generate a
-shareable placeholder with `pideploy config template` (commit that, never the real one).
+shareable placeholder with `redeploy config template` (commit that, never the real one).
 Host keys: deploy_host, portainer_url, runner_label, default_port, default_branch,
 auto_serve, prune_images, node_version, python_version, go_version.
-Repo keys (.pideploy.conf): app_name, dotenv_secret.
-New host setup: `pideploy config template > ~/.config/pideploy/config` then edit.
+Repo keys (.redeploy.conf): app_name, dotenv_secret.
+New host setup: `redeploy config template > ~/.config/redeploy/config` then edit.
 
 ## Files written into a repo by init
 - `Dockerfile` (only if missing; node/python/go/static autodetect).
 - `docker-compose.yml` (build: ., binds 127.0.0.1:<port>, top-level name:=stack).
 - `.github/workflows/deploy.yml` (runs-on [self-hosted, <label>]; push + dispatch only).
-- `.pideploy.conf` (port/name/branch; safe to commit, no secrets).
+- `.redeploy.conf` (port/name/branch; safe to commit, no secrets).
 - appends `.env` to `.gitignore`.
 
 ## Ports (no collisions across repos)
-A host-wide registry ($PIDEPLOY_HOME/ports, <owner-repo>=<port>) keeps every app on
+A host-wide registry ($REDEPLOY_HOME/ports, <owner-repo>=<port>) keeps every app on
 a distinct, stable port. `init` auto-assigns the lowest free port at/above default_port
 (8080) when --port is omitted; an explicit --port is rejected (exit 1) if another app
-already uses it. Re-init reuses the repo's recorded port; `rm` frees it. See `pideploy ports`.
+already uses it. Re-init reuses the repo's recorded port; `rm` frees it. See `redeploy ports`.
 
 ## Exposing multiple apps (path-based, no collisions)
 `serve` is path-based on https://<host>:443 by default: each app mounts at a distinct
 path (default /<app_name>) via `tailscale serve --set-path`, so many apps coexist:
   https://<host>/api -> :8080 · https://<host>/web -> :8081 · https://<host>/bot -> :8082
-In a repo, `pideploy serve` needs no args (port from .pideploy.conf, path from app_name).
+In a repo, `redeploy serve` needs no args (port from .redeploy.conf, path from app_name).
 Caveat: the app must tolerate a sub-path (relative links / configurable base URL). If it
 can't, use `--port-mode` to serve it at https://<host>:<port>/ (its own HTTPS port, root).
 `unserve` removes just one route. Tailscale routing is unrelated to deploy targeting.
 
 ## Secrets (.env)
 A local `.env` is the source of truth. When present, `init` uploads it to a GitHub
-Actions secret (`gh secret set`, default name PIDEPLOY_DOTENV) and the generated
+Actions secret (`gh secret set`, default name REDEPLOY_DOTENV) and the generated
 workflow recreates `.env` on the runner before `docker compose up`. `.env` is never
-committed. Re-sync after editing it with `pideploy env`. Skip with `--no-dotenv`.
+committed. Re-sync after editing it with `redeploy env`. Skip with `--no-dotenv`.
 
 ## Agent quickstart (deploy a repo end-to-end)
 1. cd <repo>  (needs GitHub remote; else: gh repo create --source=. --private --push)
-2. pideploy doctor --json    # ensure "ok":true; if not, pideploy setup
-3. pideploy init --port <app-port> --json
-4. pideploy status --json    # confirm runner active and a stack is up
-5. pideploy serve <app-port> # stdout is the https URL
-Redeploy after changes: git push   (or: pideploy deploy)
+2. redeploy doctor --json    # ensure "ok":true; if not, redeploy setup
+3. redeploy init --port <app-port> --json
+4. redeploy status --json    # confirm runner active and a stack is up
+5. redeploy serve <app-port> # stdout is the https URL
+Redeploy after changes: git push   (or: redeploy deploy)
 
 ## Troubleshooting
-- runner inactive: systemctl --user status pideploy-runner@<owner-repo>; enable linger.
+- runner inactive: systemctl --user status redeploy-runner@<owner-repo>; enable linger.
 - unreachable app: ensure it listens on <port> and compose maps 127.0.0.1:<port>:<port>.
 - serve "access denied": sudo tailscale set --operator=$USER.
 - no remote / push rejected: gh repo create first; check gh scopes repo+workflow.
@@ -835,26 +891,26 @@ cmd_help() {
   case "$c" in
     "") usage; return 0;;
     init) cat <<'H'
-pideploy init — set up the current git repo to deploy on every push.
+redeploy init — set up the current git repo to deploy on every push.
 
 Run inside a git repo that has a GitHub remote. Idempotent: re-running keeps
 existing files and skips runner registration. Scaffolds Dockerfile (if missing),
-docker-compose.yml, .github/workflows/deploy.yml, and .pideploy.conf; registers a
+docker-compose.yml, .github/workflows/deploy.yml, and .redeploy.conf; registers a
 per-repo self-hosted runner as a user systemd service; commits and pushes (which
 triggers the first deploy).
 
 USAGE
-  pideploy init [--port N] [--name NAME] [--serve|--no-serve]
+  redeploy init [--port N] [--name NAME] [--serve|--no-serve]
                 [--dotenv-secret NAME|--no-dotenv] [--json]
 
 OPTIONS
   --port N             Host port to bind on 127.0.0.1 (collision-checked). Omit to AUTO-ASSIGN
                        the lowest free port at/above default_port (8080) — apps never collide.
-                       The choice is recorded in the host registry (see: pideploy ports).
-  --name NAME          App / Docker-compose stack / container name (default: .pideploy.conf app_name, else repo name).
+                       The choice is recorded in the host registry (see: redeploy ports).
+  --name NAME          App / Docker-compose stack / container name (default: .redeploy.conf app_name, else repo name).
   --serve              After deploy, expose the port over Tailscale HTTPS immediately.
   --no-serve           Do not expose (overrides config auto_serve).
-  --dotenv-secret NAME GitHub Actions secret name to sync .env into (default: PIDEPLOY_DOTENV when a .env exists).
+  --dotenv-secret NAME GitHub Actions secret name to sync .env into (default: REDEPLOY_DOTENV when a .env exists).
   --no-dotenv          Do not sync .env to a secret even if one exists.
   --json               Emit the result object {repo,app,port,branch,runner,runner_registered,pushed,files}.
 
@@ -862,35 +918,35 @@ SECRETS
   If a .env exists, init treats it as the source of truth: it uploads it to a
   GitHub Actions secret via 'gh secret set', and the generated workflow recreates
   .env from that secret on the runner before 'docker compose up'. Re-sync after
-  editing .env with 'pideploy env'.
+  editing .env with 'redeploy env'.
 
 REMOTE MODE
   Set 'runner_host=you@your-pi' (config) on a dev machine and init registers the
   runner on the host over SSH, then only scaffolds + pushes locally — so you can
   onboard repos from your laptop (no Docker/systemd needed there). Needs SSH to the
-  host (e.g. Tailscale SSH) and pideploy installed there.
+  host (e.g. Tailscale SSH) and redeploy installed there.
 
 OUTPUT
-  stdout: key=value result (or JSON). stderr: progress (pideploy: ...).
+  stdout: key=value result (or JSON). stderr: progress (redeploy: ...).
 EXAMPLES
-  pideploy init --port 3000
-  pideploy init --name api --serve --json
+  redeploy init --port 3000
+  redeploy init --name api --serve --json
 H
 ;;
     deploy) cat <<'H'
-pideploy deploy — trigger a deploy of the current repo now (without code changes).
+redeploy deploy — trigger a deploy of the current repo now (without code changes).
 
 Dispatches the deploy workflow via the GitHub API; if that fails, pushes an empty
 commit instead. Run inside the repo.
 
-USAGE   pideploy deploy [--json]
+USAGE   redeploy deploy [--json]
 OUTPUT  stdout: dispatched=true (or JSON {dispatched,repo}). stderr: progress.
 H
 ;;
     status) cat <<'H'
-pideploy status — show the deploy state on this host.
+redeploy status — show the deploy state on this host.
 
-USAGE   pideploy status [--json]
+USAGE   redeploy status [--json]
 OUTPUT (text, tab-separated rows on stdout):
   target    <deploy_host>             this deploy target (config deploy_host, else hostname)
   portainer <url>                     Portainer URL, if configured
@@ -903,16 +959,16 @@ OUTPUT (text, tab-separated rows on stdout):
 H
 ;;
     serve) cat <<'H'
-pideploy serve — expose a local port over Tailscale with HTTPS (tailnet-only).
+redeploy serve — expose a local port over Tailscale with HTTPS (tailnet-only).
 
 Apps bind 127.0.0.1; this fronts them with a real TLS cert reachable from your
 tailnet (and nowhere else). MANY apps can be served at once: each gets a distinct
 path on https://<host>/ — so they never collide.
 
-USAGE   pideploy serve [port] [--path /name] [--port-mode] [--json]
+USAGE   redeploy serve [port] [--path /name] [--port-mode] [--json]
 
 OPTIONS
-  port         Local port to expose (default: the current repo's port, from .pideploy.conf).
+  port         Local port to expose (default: the current repo's port, from .redeploy.conf).
   --path /name URL path to mount at (default: /<app_name> in a repo, else /). Each app
                at a distinct path coexists: https://<host>/api, https://<host>/web, ...
   --port-mode  Instead of a path, serve at https://<host>:<port>/ (the app gets the root
@@ -920,151 +976,169 @@ OPTIONS
   --json       Emit {url, port, path}.
 
 OUTPUT  stdout: the https URL. stderr: progress.
-NOTE    Needs Tailscale HTTPS enabled + `sudo tailscale set --operator=$USER` (see: pideploy setup).
+NOTE    Needs Tailscale HTTPS enabled + `sudo tailscale set --operator=$USER` (see: redeploy setup).
 EXAMPLES
-  pideploy serve                 # in a repo: https://<host>/<app_name>
-  pideploy serve 8080 --path /api
-  pideploy serve 8080 --port-mode    # https://<host>:8080/
+  redeploy serve                 # in a repo: https://<host>/<app_name>
+  redeploy serve 8080 --path /api
+  redeploy serve 8080 --port-mode    # https://<host>:8080/
 H
 ;;
     unserve) cat <<'H'
-pideploy unserve — remove ONE app's Tailscale route (others stay up).
+redeploy unserve — remove ONE app's Tailscale route (others stay up).
 Mirrors serve's resolution: path-based by default (default path /<app_name>);
 --port-mode removes the https://<host>:<port>/ mapping instead.
-USAGE   pideploy unserve [port] [--path /name] [--port-mode]
+USAGE   redeploy unserve [port] [--path /name] [--port-mode]
 H
 ;;
     logs) cat <<'H'
-pideploy logs — tail a deployed app's container logs (follows; Ctrl-C to stop).
-USAGE   pideploy logs [app]      # app defaults to the first running container
+redeploy logs — tail a deployed app's container logs (follows; Ctrl-C to stop).
+USAGE   redeploy logs [app]      # app defaults to the first running container
 H
 ;;
     url|open) cat <<'H'
-pideploy url — print THIS repo's app endpoint. If the app's port is currently
+redeploy url — print THIS repo's app endpoint. If the app's port is currently
 served over Tailscale, prints that https URL; otherwise prints the local
-http://127.0.0.1:<port>/ and reminds you to `pideploy serve`. `pideploy open`
+http://127.0.0.1:<port>/ and reminds you to `redeploy serve`. `redeploy open`
 does the same and launches it in a browser (if one is available).
 
-USAGE   pideploy url [--json]      # run inside the repo (uses .pideploy.conf)
-        pideploy open
+USAGE   redeploy url [--json]      # run inside the repo (uses .redeploy.conf)
+        redeploy open
 OUTPUT  stdout: the URL (or JSON {app,port,local,served,url,path}).
 H
 ;;
     env) cat <<'H'
-pideploy env — sync the local .env (source of truth) to a GitHub Actions secret.
+redeploy env — sync the local .env (source of truth) to a GitHub Actions secret.
 
 Uploads ./.env via `gh secret set` so the deploy workflow can recreate it on the
 runner before `docker compose up`. `init` does this automatically when a .env is
 present; run `env` again after editing .env. Never commits .env (it's gitignored).
 
-USAGE   pideploy env [--name NAME]        # default secret: PIDEPLOY_DOTENV (or .pideploy.conf dotenv_secret)
+USAGE   redeploy env [--name NAME]        # default secret: REDEPLOY_DOTENV (or .redeploy.conf dotenv_secret)
 OUTPUT  stdout: secret=<NAME> (or JSON {secret,repo}); stderr: progress.
 H
 ;;
     register) cat <<'H'
-pideploy register — (host-side) register a self-hosted runner for a repo on THIS
+redeploy register — (host-side) register a self-hosted runner for a repo on THIS
 host and assign/record its port. Mostly used internally by remote-mode `init`
 (your laptop SSHes here and calls this). You can also run it directly on the host.
 
-USAGE   pideploy register <owner/repo> [--port N] [--json]
-OUTPUT  runner=pi-<owner-repo> · port=<n> · label=<runner_label> · registered=<bool>
+USAGE   redeploy register <owner/repo> [--port N] [--json]
+OUTPUT  runner=rd-<owner-repo> · port=<n> · label=<runner_label> · registered=<bool>
 H
 ;;
     onboard) cat <<'H'
-pideploy onboard — clone a repo onto THIS host and init it in one step.
+redeploy onboard — clone a repo onto THIS host and init it in one step.
 
-Run on the deploy host. Clones the repo into $PIDEPLOY_REPOS (default
-~/pideploy-repos/<name>), then runs `pideploy init` there — registering the
+Run on the deploy host. Clones the repo into $REDEPLOY_REPOS (default
+~/redeploy-repos/<name>), then runs `redeploy init` there — registering the
 runner on this host so the repo deploys here. Accepts all `init` flags.
 
-USAGE   pideploy onboard <git-url|owner/repo> [--port N] [--name NAME] [--serve] [--no-dotenv]
-EXAMPLE pideploy onboard me/my-api --port 3000
+USAGE   redeploy onboard <git-url|owner/repo> [--port N] [--name NAME] [--serve] [--no-dotenv]
+EXAMPLE redeploy onboard me/my-api --port 3000
 H
 ;;
     config) cat <<'H'
-pideploy config — view or change settings. The HOST config is global
-(~/.config/pideploy/config) and is reused by every repo you onboard on this host.
+redeploy config — view or change settings. The HOST config is global
+(~/.config/redeploy/config) and is reused by every repo you onboard on this host.
 
-Precedence (highest first): CLI flags > per-repo .pideploy.conf > host config > built-in.
+Precedence (highest first): CLI flags > per-repo .redeploy.conf > host config > built-in.
 
 USAGE
-  pideploy config list [--json]      Show effective config.
-  pideploy config get <key>          Print one value.
-  pideploy config set <key> <value>  Persist a host default.
-  pideploy config edit               Open the host config in $EDITOR.
-  pideploy config template           Print a shareable placeholder host config (no real values).
-  pideploy config path               Print the host config file path.
+  redeploy config list [--json]      Show effective config.
+  redeploy config get <key>          Print one value.
+  redeploy config set <key> <value>  Persist a host default.
+  redeploy config edit               Open the host config in $EDITOR.
+  redeploy config template           Print a shareable placeholder host config (no real values).
+  redeploy config path               Print the host config file path.
 
 HOST KEYS  deploy_host, portainer_url, runner_label, default_port, default_branch,
            auto_serve, prune_images, node_version, python_version, go_version.
-REPO KEYS  app_name, dotenv_secret (written to .pideploy.conf by init).
+REPO KEYS  app_name, dotenv_secret (written to .redeploy.conf by init).
 DEV KEY    runner_host=you@your-pi — set on a laptop to enable REMOTE MODE: 'init'
            registers the runner on the host over SSH (onboard repos from anywhere).
 
-SETUP (new host):  pideploy config template > ~/.config/pideploy/config  &&  pideploy config edit
+SETUP (new host):  redeploy config template > ~/.config/redeploy/config  &&  redeploy config edit
 H
 ;;
     rm) cat <<'H'
-pideploy rm — deregister this repo's self-hosted runner and remove its service.
+redeploy rm — deregister this repo's self-hosted runner and remove its service.
 Leaves the workflow file in the repo; frees its port in the host registry.
-Re-run `pideploy init` to recreate.
-USAGE   pideploy rm
+Re-run `redeploy init` to recreate.
+USAGE   redeploy rm
 H
 ;;
     ports) cat <<'H'
-pideploy ports — list the host port registry (which repo is assigned which port).
+redeploy ports — list the host port registry (which repo is assigned which port).
 
-pideploy keeps every onboarded app on a distinct, stable host port so deploys
+redeploy keeps every onboarded app on a distinct, stable host port so deploys
 never collide. `init` auto-assigns the lowest free port at/above default_port
 (8080) unless you pass --port (which is collision-checked). `rm` frees a port.
 
-USAGE   pideploy ports [--json]
+USAGE   redeploy ports [--json]
 OUTPUT  text: '<owner-repo>=<port>' lines; --json: {"<owner-repo>": <port>, ...}
 H
 ;;
     setup) cat <<'H'
-pideploy setup — best-effort one-time host preparation (idempotent).
+redeploy setup — best-effort one-time host preparation (idempotent).
 Enables systemd linger (so runners survive reboot) and sets the Tailscale
 operator (so serve needs no sudo). Prints manual commands for anything it
-cannot do without a password. Then run `pideploy doctor`.
-USAGE   pideploy setup
+cannot do without a password. Then run `redeploy doctor`.
+USAGE   redeploy setup
 H
 ;;
     doctor) cat <<'H'
-pideploy doctor — check every prerequisite; exit 1 if any FATAL check fails.
+redeploy doctor — check every prerequisite; exit 1 if any FATAL check fails.
 
 Checks binaries (git, gh, docker, curl, tar, systemctl, loginctl, tailscale),
 gh auth, git-identity (a real user.email/name is set), docker group membership,
 user systemd, docker engine, tailscale up, and linger. tailscale-up and linger
 are WARN (non-fatal).
 
-USAGE   pideploy doctor [--json]
+USAGE   redeploy doctor [--json]
 OUTPUT  text: "<check> ok|WARN|FAIL"; --json: {checks:[{name,ok,severity}], ok}
 H
 ;;
+    update|upgrade) cat <<'H'
+redeploy update — upgrade this CLI to the latest release from GitHub.
+
+Resolves the latest release of Traves-Theberge/redeploy, downloads the binary
+(falling back to the main branch if no release asset), validates it really is a
+redeploy script, and replaces the installed binary in place (the one `redeploy`
+resolves to on your PATH). Uses sudo only if the target isn't writable.
+
+USAGE   redeploy update [--check] [--json]
+OPTIONS
+  --check   Only compare versions; do not download or replace anything.
+  --json    Emit {current,latest,up_to_date,path} (check) or {updated,from,to,path}.
+OUTPUT  stdout: 'updated=<old>-><new>' / 'redeploy <v> (up to date)' (or JSON).
+EXAMPLES
+  redeploy update --check
+  redeploy update
+H
+;;
     agent) cat <<'H'
-pideploy agent — print the full operating manual for AI agents (also: --agent).
-USAGE   pideploy agent
+redeploy agent — print the full operating manual for AI agents (also: --agent).
+USAGE   redeploy agent
 H
 ;;
     skill) cat <<'H'
-pideploy skill — print a Claude Code skill (markdown w/ frontmatter) teaching an
+redeploy skill — print a Claude Code skill (markdown w/ frontmatter) teaching an
 agent to use this CLI: directives, rules, workflow, troubleshooting. Also: --skill.
-Save it to .claude/skills/pideploy/SKILL.md to install.
-USAGE   pideploy skill > .claude/skills/pideploy/SKILL.md
+Save it to .claude/skills/redeploy/SKILL.md to install.
+USAGE   redeploy skill > .claude/skills/redeploy/SKILL.md
 H
 ;;
     help) cat <<'H'
-pideploy help — show the overview, or detailed help for one command.
-USAGE   pideploy help [command]      # also: pideploy <command> --help
+redeploy help — show the overview, or detailed help for one command.
+USAGE   redeploy help [command]      # also: redeploy <command> --help
 H
 ;;
     version) cat <<'H'
-pideploy version — print the CLI version.
-USAGE   pideploy version            # also: pideploy --version
+redeploy version — print the CLI version.
+USAGE   redeploy version            # also: redeploy --version
 H
 ;;
-    *) usage_err "no help for command: $c (try: pideploy help)";;
+    *) usage_err "no help for command: $c (try: redeploy help)";;
   esac
 }
 
@@ -1072,13 +1146,13 @@ H
 cmd_skill() {
   cat <<'SKILL'
 ---
-name: pideploy
-description: Use when deploying a git repo to a self-hosted Docker host (Raspberry Pi) via the `pideploy` CLI — set up push-to-deploy, check deploy status, expose apps over Tailscale, or troubleshoot a runner. Triggers: "deploy this to my pi", "set up push-to-deploy", "expose this app over tailscale", "why isn't my deploy running".
+name: redeploy
+description: Use when deploying a git repo to a self-hosted Docker host (any Linux box — Raspberry Pi, VPS, home server) via the `redeploy` CLI — set up push-to-deploy, check deploy status, expose apps over Tailscale, or troubleshoot a runner. Triggers: "deploy this to my server", "set up push-to-deploy", "expose this app over tailscale", "why isn't my deploy running".
 ---
 
-# Deploying with the pideploy CLI
+# Deploying with the redeploy CLI
 
-`pideploy` turns any git repo into push-to-deploy on a self-hosted Docker host: a
+`redeploy` turns any git repo into push-to-deploy on a self-hosted Docker host: a
 per-repo self-hosted GitHub Actions runner builds the repo's Docker image on push
 and runs it via docker compose. Apps appear in Portainer and are exposed over
 Tailscale HTTPS. The CLI is plain and non-interactive — ideal to drive directly.
@@ -1093,31 +1167,31 @@ the host: checkout → (provision .env from secret) → `docker compose up -d --
 sees them); `serve` exposes a port over Tailscale.
 
 ## First, read the manual
-Run `pideploy --agent` for the authoritative reference, and `pideploy help <command>`
+Run `redeploy --agent` for the authoritative reference, and `redeploy help <command>`
 for any command's options. Do not guess flags — confirm with `help`.
 
 ## Host config (one config, many repos)
-This host has a global config at `~/.config/pideploy/config` (deploy_host, runner_label,
+This host has a global config at `~/.config/redeploy/config` (deploy_host, runner_label,
 portainer_url, defaults). It is reused by every repo onboarded here and lives outside
-any repo, so it never leaks. New host: `pideploy config template > ~/.config/pideploy/config`
+any repo, so it never leaks. New host: `redeploy config template > ~/.config/redeploy/config`
 then edit. NEVER commit a real host config or .env — only the placeholder template.
 
 ## Local vs remote mode
 Run `init` ON the host (local), or set `runner_host=you@host` on a dev machine for
-REMOTE mode: `init` SSHes to the host, runs `pideploy register <repo>` there to enroll
+REMOTE mode: `init` SSHes to the host, runs `redeploy register <repo>` there to enroll
 the runner + assign the port, then scaffolds + pushes locally. Lets you onboard repos
-from a laptop (no Docker/systemd needed locally). Needs SSH to the host + pideploy there.
+from a laptop (no Docker/systemd needed locally). Needs SSH to the host + redeploy there.
 
 ## Output contract (rely on this)
 - Data → STDOUT (`key=value`/rows, or JSON with `--json`). Parse stdout.
-- Progress/warnings/errors → STDERR (`pideploy:`/`warn:`/`error:`). With `--json`,
+- Progress/warnings/errors → STDERR (`redeploy:`/`warn:`/`error:`). With `--json`,
   errors are `{"error":"<msg>","code":<N>}` on STDERR; STDOUT stays empty on error.
 - Exit codes: 0 ok · 1 runtime error · 2 usage error. Always check them.
 - Never prompts. Prefer `--json` when parsing programmatically.
 
 ## Rules / directives
-- ALWAYS run `pideploy doctor --json` first and ensure `"ok":true`. If not, run
-  `pideploy setup`, then re-check. Do not proceed past FATAL checks.
+- ALWAYS run `redeploy doctor --json` first and ensure `"ok":true`. If not, run
+  `redeploy setup`, then re-check. Do not proceed past FATAL checks.
 - A real git identity MUST be set (`git config --global user.email`/`user.name`).
   `init`/`deploy` refuse to commit with an unset or generic identity (e.g.
   `noreply@users.noreply.github.com`) — GitHub mis-attributes such commits to a
@@ -1127,34 +1201,34 @@ from a laptop (no Docker/systemd needed locally). Needs SSH to the host + pidepl
 - Apps MUST listen on the port `init` uses (pass `--port`, or let it auto-assign)
   and compose maps `127.0.0.1:<port>:<port>`. Mismatch = unreachable.
 - Ports never collide: `init` auto-assigns a free, stable port per repo (registry).
-  Omit `--port` to auto-assign; an explicit taken `--port` fails. See `pideploy ports`.
-- Expose many apps at once: `pideploy serve` is path-based (each app at https://<host>/<app>).
+  Omit `--port` to auto-assign; an explicit taken `--port` fails. See `redeploy ports`.
+- Expose many apps at once: `redeploy serve` is path-based (each app at https://<host>/<app>).
   In a repo it needs no args. If an app can't handle a sub-path, use `--port-mode`
   (https://<host>:<port>/). `unserve` removes one route.
 - NEVER add a `pull_request` trigger to the generated workflow on a public repo —
   it would let a fork run code on the self-hosted runner.
 - NEVER commit secrets. A local `.env` is the source of truth: `init` syncs it to
-  a GitHub Actions secret (`gh secret set`, default PIDEPLOY_DOTENV) and the workflow
-  recreates `.env` on the runner before compose up. Re-sync after edits: `pideploy env`.
+  a GitHub Actions secret (`gh secret set`, default REDEPLOY_DOTENV) and the workflow
+  recreates `.env` on the runner before compose up. Re-sync after edits: `redeploy env`.
   `.env` is gitignored. Skip syncing with `--no-dotenv`.
 - One runner per repo (personal GitHub accounts can't share runners).
 
 ## Standard workflow (end-to-end)
-1. `pideploy doctor --json`            → verify prerequisites (else `pideploy setup`).
+1. `redeploy doctor --json`            → verify prerequisites (else `redeploy setup`).
 2. `cd <repo>`                         → ensure a GitHub remote exists.
-3. `pideploy init --port <P> --json`   → scaffold, register runner, push (first deploy).
-4. `pideploy status --json`            → confirm runner active and stack is up.
-5. `pideploy serve <P>`                → stdout is the public https URL.
-6. `pideploy url`                      → reprint this app's endpoint anytime.
-- Redeploy after changes: `git push` (or `pideploy deploy`).
-- Tear down a repo's runner: `pideploy rm`.
+3. `redeploy init --port <P> --json`   → scaffold, register runner, push (first deploy).
+4. `redeploy status --json`            → confirm runner active and stack is up.
+5. `redeploy serve <P>`                → stdout is the public https URL.
+6. `redeploy url`                      → reprint this app's endpoint anytime.
+- Redeploy after changes: `git push` (or `redeploy deploy`).
+- Tear down a repo's runner: `redeploy rm`.
 
 ## Troubleshooting
-- runner inactive (status): `systemctl --user status pideploy-runner@<owner-repo>`;
-  ensure linger is on (`pideploy setup` or `sudo loginctl enable-linger $USER`).
+- runner inactive (status): `systemctl --user status redeploy-runner@<owner-repo>`;
+  ensure linger is on (`redeploy setup` or `sudo loginctl enable-linger $USER`).
 - app unreachable after deploy: verify the in-container listen port matches `--port`
-  and the compose port mapping; then `pideploy serve <port>`.
-- `serve` "access denied": `sudo tailscale set --operator=$USER` (or `pideploy setup`).
+  and the compose port mapping; then `redeploy serve <port>`.
+- `serve` "access denied": `sudo tailscale set --operator=$USER` (or `redeploy setup`).
 - no HTTPS cert: enable HTTPS Certificates in the Tailscale admin console.
 - init fails "no GitHub remote": `gh repo create --source=. --private --push`.
 - deploys never trigger: check `gh auth status` includes `repo` + `workflow` scopes.
@@ -1164,21 +1238,21 @@ from a laptop (no Docker/systemd needed locally). Needs SSH to the host + pidepl
 `onboard <repo>` clone+init on host · `register <repo>` host-side runner enroll (remote mode) ·
 `deploy` redeploy now · `status` state · `serve`/`unserve` expose · `url`/`open` app endpoint ·
 `logs` tail · `config` defaults · `ports` port registry · `env` sync .env→secret · `rm` remove runner ·
-`agent` · `skill` · `help <cmd>`.
-Add `--json` to init/status/deploy/serve/url/ports/config/env/register/doctor.
+`update` self-upgrade · `agent` · `skill` · `help <cmd>`.
+Add `--json` to init/status/deploy/serve/url/ports/config/env/register/doctor/update.
 SKILL
 }
 
 usage() {
   cat <<EOF
-pideploy v$PIDEPLOY_VERSION — push-to-deploy for a self-hosted Docker host
+redeploy v$REDEPLOY_VERSION — push-to-deploy for a self-hosted Docker host
 
->> AI AGENTS: run \`pideploy --agent\` for the full operating manual before using
-   this tool, then \`pideploy help <command>\` for any command's options.
+>> AI AGENTS: run \`redeploy --agent\` for the full operating manual before using
+   this tool, then \`redeploy help <command>\` for any command's options.
 
 WHAT IT IS
-  A plain, scriptable CLI that turns any git repo into push-to-deploy on a
-  machine you own (built for a Raspberry Pi). No cloud, no inbound ports.
+  A plain, scriptable CLI that turns any git repo into push-to-deploy on any
+  Linux machine you own (Raspberry Pi, VPS, home server). No cloud, no inbound ports.
 
 HOW IT WORKS
   'init' scaffolds a Dockerfile/compose/workflow and registers a per-repo,
@@ -1192,20 +1266,20 @@ HOW IT WORKS
   runner on the host over SSH and just scaffolds + pushes.
 
 GETTING STARTED  (do this first)
-  1. pideploy setup                      prepare this host (linger + tailscale)  [once]
-  2. pideploy doctor                     confirm prerequisites are ok
+  1. redeploy setup                      prepare this host (linger + tailscale)  [once]
+  2. redeploy doctor                     confirm prerequisites are ok
   3. cd <your-repo>                      a repo with a GitHub remote
-  4. pideploy init --port <port>         scaffold + register runner + first deploy
-  5. pideploy serve <port>               expose over Tailscale (prints the URL)
+  4. redeploy init --port <port>         scaffold + register runner + first deploy
+  5. redeploy serve <port>               expose over Tailscale (prints the URL)
   Then just 'git push' to redeploy.
 
 FOR AI AGENTS
-  pideploy --agent                       full operating manual (read this first)
-  pideploy --skill > .claude/skills/pideploy/SKILL.md    install a Claude Code skill
-  pideploy help <command>                detailed help + options for one command
+  redeploy --agent                       full operating manual (read this first)
+  redeploy --skill > .claude/skills/redeploy/SKILL.md    install a Claude Code skill
+  redeploy help <command>                detailed help + options for one command
 
 USAGE
-  pideploy <command> [args] [--json]
+  redeploy <command> [args] [--json]
 
 COMMANDS
   init [--port N] [--name NAME] [--serve]   set up the current repo to deploy on push
@@ -1223,6 +1297,7 @@ COMMANDS
   rm                                        remove this repo's runner
   setup                                     one-time host prep (linger, tailscale operator)
   doctor                                    check prerequisites (exit 1 if any fail)
+  update [--check]                          update redeploy to the latest release (--check: just compare)
   agent                                     print the full manual for AI agents
   skill                                     print a Claude Code skill for this CLI
   version | help [command]                  version, or detailed help for a command
@@ -1232,7 +1307,7 @@ FLAGS
   --agent   print the agent manual          --skill  print the agent skill
   --yes     accepted (no-op; CLI never prompts)
 
-Detailed help:  pideploy help <command>      Full manual:  pideploy --agent
+Detailed help:  redeploy help <command>      Full manual:  redeploy --agent
 EOF
 }
 
@@ -1248,10 +1323,10 @@ main() {
     *) args+=("$a");;
   esac; done
   load_config
-  mkdir -p "$PIDEPLOY_HOME" "$RUNNERS_DIR"
+  mkdir -p "$REDEPLOY_HOME" "$RUNNERS_DIR"
 
   local cmd="${args[0]:-help}"; [ ${#args[@]} -gt 0 ] && args=("${args[@]:1}") || args=()
-  # `pideploy <cmd> --help` and `pideploy -h` show detailed help
+  # `redeploy <cmd> --help` and `redeploy -h` show detailed help
   [ "$want_help" = 1 ] && { [ "$cmd" = help ] && cmd_help || cmd_help "$cmd"; exit 0; }
   case "$cmd" in
     init)    cmd_init    "${args[@]}";;
@@ -1270,12 +1345,13 @@ main() {
     rm)      cmd_rm      "${args[@]}";;
     setup)   cmd_setup   "${args[@]}";;
     doctor)  cmd_doctor  "${args[@]}";;
+    update|upgrade) cmd_update "${args[@]}";;
     agent)   cmd_agent;;
     skill)   cmd_skill;;
     help)    cmd_help "${args[@]}";;
-    version|--version|-v) printf 'pideploy %s\n' "$PIDEPLOY_VERSION";;
-    *) usage_err "unknown command: $cmd (try: pideploy help)";;
+    version|--version|-v) printf 'redeploy %s\n' "$REDEPLOY_VERSION";;
+    *) usage_err "unknown command: $cmd (try: redeploy help)";;
   esac
 }
 
-if [ "${PIDEPLOY_LIB:-0}" != "1" ]; then main "$@"; fi
+if [ "${REDEPLOY_LIB:-0}" != "1" ]; then main "$@"; fi

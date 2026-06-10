@@ -1,4 +1,4 @@
-# pideploy repo — keep it clean & leak-free
+# redeploy repo — keep it clean & leak-free
 *.swp
 *.tmp
 *~
@@ -7,14 +7,14 @@
 
 # never commit a real host config or secrets (only config.example is shared)
 /config
-pideploy.config
+redeploy.config
 *.local
 .env
 *.env
 !*.env.example
 
-# guard: this is the TOOL repo, not an app — a stray `pideploy init` here must
-# never pollute the tracked tree (load_config reads a CWD .pideploy.conf).
-/.pideploy.conf
+# guard: this is the TOOL repo, not an app — a stray `redeploy init` here must
+# never pollute the tracked tree (load_config reads a CWD .redeploy.conf).
+/.redeploy.conf
 /docker-compose.yml
 /.github/workflows/deploy.yml

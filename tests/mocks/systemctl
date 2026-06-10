@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-SD="${PIDEPLOY_STATE:-/tmp/pd-state}"; mkdir -p "$SD"
-inst=""; for x in "$@"; do case "$x" in pideploy-runner@*) inst="${x#pideploy-runner@}"; inst="${inst%.service}";; esac; done
+SD="${REDEPLOY_STATE:-/tmp/pd-state}"; mkdir -p "$SD"
+inst=""; for x in "$@"; do case "$x" in redeploy-runner@*) inst="${x#redeploy-runner@}"; inst="${inst%.service}";; esac; done
 a="$*"
 case "$a" in
   *"is-system-running"*)  echo running; exit 0 ;;

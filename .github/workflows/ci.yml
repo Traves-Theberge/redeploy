@@ -25,4 +25,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck --severity=error
-        run: shellcheck --severity=error pideploy tests/run.sh tests/mocks/* install.sh
+        run: shellcheck --severity=error redeploy tests/run.sh tests/mocks/* install.sh

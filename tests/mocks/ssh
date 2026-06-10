@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # mock ssh: ssh [opts] <host> "<remote command>"
-# Only needs to answer the remote-mode 'pideploy register' call.
+# Only needs to answer the remote-mode 'redeploy register' call.
 a="$*"
 case "$a" in
-  *"pideploy register"*) printf '{"repo":"testuser/testrepo","runner":"pi-testuser-testrepo","port":8080,"label":"pideploy","registered":true}\n' ;;
+  *"redeploy register"*) printf '{"repo":"testuser/testrepo","runner":"rd-testuser-testrepo","port":8080,"label":"redeploy","registered":true}\n' ;;
   *) exit 0 ;;
 esac

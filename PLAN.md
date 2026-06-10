@@ -1,4 +1,4 @@
-# pideploy — Project Plan
+# redeploy — Project Plan
 
 > Run a CLI in any git repo → every push builds the app with Docker on a
 > Raspberry Pi, it appears in Portainer, and it's reachable anywhere over
@@ -16,7 +16,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ todo
  │ machine    │               │ Actions  │   builds + compose up  │  (this host) │
  └────────────┘               └──────────┘                        └──────┬───────┘
         ▲                                                                  │
-        │  pideploy init / deploy / status / serve                        │ shares Docker engine
+        │  redeploy init / deploy / status / serve                        │ shares Docker engine
         │                                                                  ▼
         │                                                          ┌──────────────┐
         └────── https://<host>.ts.net  ◀── tailscale serve ──────  │  Portainer   │
@@ -25,16 +25,16 @@ Status legend: ✅ done · 🟡 in progress · ⬜ todo
 ```
 
 **Key design decisions**
-- **One runner per repo**, as a *user* systemd service (`pideploy-runner@<owner-repo>`).
+- **One runner per repo**, as a *user* systemd service (`redeploy-runner@<owner-repo>`).
   Personal GitHub accounts can't share a runner across repos.
 - **Outbound-only**: the runner dials GitHub, so the Pi needs no inbound ports.
   GitHub webhooks *cannot* reach a tailnet-only Pi — never rely on them.
 - **Portainer integration is implicit**: runner and Portainer share one Docker
   engine, so `docker compose up` stacks show up in Portainer automatically.
   Compose `name:` = the stack name shown there.
-- **Exposure** via `pideploy serve` (path-based Tailscale HTTPS; many apps coexist at
+- **Exposure** via `redeploy serve` (path-based Tailscale HTTPS; many apps coexist at
   `https://<host>/<app>`); apps bind `127.0.0.1` only.
-- **Secrets never in git**: `.pideploy.conf` holds only port/name/branch; `.env`
+- **Secrets never in git**: `.redeploy.conf` holds only port/name/branch; `.env`
   is gitignored; real secrets live in GitHub Actions secrets or Portainer env.
 
 ---
@@ -42,11 +42,11 @@ Status legend: ✅ done · 🟡 in progress · ⬜ todo
 ## 2. Repository layout
 
 ```
-pideploy/
-├── pideploy              ✅ the CLI (single bash file, dependency-light)
+redeploy/
+├── redeploy              ✅ the CLI (single bash file, dependency-light)
 ├── README.md             ✅ headline doc (prereqs + setup walk-throughs)
 ├── PLAN.md               ✅ this file
-├── LICENSE               ✅ MIT (copyright "pideploy contributors", PII-free)
+├── LICENSE               ✅ MIT (copyright "redeploy contributors", PII-free)
 ├── install.sh            ✅ installer (symlink into ~/.local/bin + doctor)
 ├── .gitignore            ✅
 └── tests/
@@ -60,8 +60,8 @@ pideploy/
 
 | Command | Status | Notes |
 |---------|--------|-------|
-| `init` / `onboard` | ✅ | scaffold/clone + runner + `.pideploy.conf` + push |
-| `init` | ✅ | scaffold + runner + `.pideploy.conf` + push |
+| `init` / `onboard` | ✅ | scaffold/clone + runner + `.redeploy.conf` + push |
+| `init` | ✅ | scaffold + runner + `.redeploy.conf` + push |
 | `deploy` | ✅ | workflow_dispatch, else empty commit |
 | `status` | ✅ | runners + containers + serve + linger |
 | `serve` / `unserve` | ✅ | path-based Tailscale HTTPS (many apps coexist) |
@@ -81,16 +81,16 @@ pideploy/
   exit codes 0/1/2, `--json` on data commands, never prompts. Format-aware JSON errors.
 - ✅ Commands: init, **onboard**, deploy, status, serve/unserve, logs, config
   (list/get/set/edit/**template**/path), **env**, rm, **setup**, doctor, agent, skill, help.
-- ✅ **Host-scoped config** (`~/.config/pideploy/config`) reused across repos; built-in →
-  host → repo (`.pideploy.conf`) → flags precedence.
+- ✅ **Host-scoped config** (`~/.config/redeploy/config`) reused across repos; built-in →
+  host → repo (`.redeploy.conf`) → flags precedence.
 - ✅ **`config template` + committed `config.example`** (placeholders) + gitignore guards.
 - ✅ Per-repo runner as user systemd service; **label-based routing** (no IP/SSH/target).
-- ✅ **Host port registry** (`~/.pideploy/ports`): `init` auto-assigns a distinct, stable
-  port per repo; explicit `--port` collisions fail; `pideploy ports` lists, `rm` frees.
+- ✅ **Host port registry** (`~/.redeploy/ports`): `init` auto-assigns a distinct, stable
+  port per repo; explicit `--port` collisions fail; `redeploy ports` lists, `rm` frees.
   Deploy many apps on one host with no port collisions.
 - ✅ Stack detection for Dockerfile (node / python / go / static fallback).
 - ✅ **`.env` → GitHub Actions secret** (`gh secret set`), recreated on the runner and
-  wiped after; `.pideploy.conf` is secret-free (name only). Leak-guard tests included.
+  wiped after; `.redeploy.conf` is secret-free (name only). Leak-guard tests included.
 - ✅ Workflow omits `pull_request` (public-repo + self-hosted-runner safety).
 - ✅ AI-ready: `--agent` manual, `--skill`, **`AGENTS.md`**, per-command `help`.
 - ✅ Hermetic test suite — **153 checks**, all passing (incl. JSON-shape, error-shape,
@@ -100,7 +100,7 @@ pideploy/
   push → label-routed to the Pi runner → checkout → provision `.env` → build →
   `docker compose up` → cleanup; `conclusion=success`, containers healthy. No secret
   leakage in the public Actions log (verified).
-- ✅ Published public: github.com/&lt;owner&gt;/pideploy (MIT, install.sh, one-line install).
+- ✅ Published public: github.com/&lt;owner&gt;/redeploy (MIT, install.sh, one-line install).
 
 ---
 
@@ -122,17 +122,17 @@ pideploy/
 - ⬜ Optional arrow-key menu (fallback to numbered) — nicer but must stay portable
 
 ### Features
-- ✅ `pideploy setup` — one-time host bootstrap (enable-linger, tailscale operator)
-- ✅ `pideploy onboard <repo>` — clone + init on the host in one step
+- ✅ `redeploy setup` — one-time host bootstrap (enable-linger, tailscale operator)
+- ✅ `redeploy onboard <repo>` — clone + init on the host in one step
 - ✅ `.env` → GitHub Actions secret provisioning + cleanup
 - ✅ Host-scoped config + shareable template
 - ✅ **Multi-app serve** — path-based by default (`tailscale serve --set-path /<app>`),
   so many apps coexist at `https://<host>/<app>`; `--port-mode` escape hatch for apps
   that can't handle a sub-path. Verified live (Portainer `/` + Fetch `/Fetch`).
-- ⬜ `pideploy open` / `url` — print/launch the app's tailnet URL
+- ⬜ `redeploy open` / `url` — print/launch the app's tailnet URL
 - ⬜ Optional Portainer **API** integration (create a true Git stack) instead of compose
 - ⬜ Org-level shared-runner mode (one runner, many repos — needs a GitHub org)
-- ⬜ Rollback helper (`pideploy rollback` → redeploy previous image/tag)
+- ⬜ Rollback helper (`redeploy rollback` → redeploy previous image/tag)
 
 ### CI / quality
 - ✅ GitHub Actions workflow running `tests/run.sh` on push/PR (`.github/workflows/ci.yml`)

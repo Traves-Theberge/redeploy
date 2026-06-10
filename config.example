@@ -1,19 +1,19 @@
-# pideploy host config — copy to ~/.config/pideploy/config and fill in your values.
+# redeploy host config — copy to ~/.config/redeploy/config and fill in your values.
 # Scoped to THIS host; reused by every repo you onboard here.
 # SAFE TO SHARE only as this placeholder template — never commit real values.
 
-# A friendly name for this deploy target (shown in `pideploy status`).
+# A friendly name for this deploy target (shown in `redeploy status`).
 deploy_host=
 
 # Label that routes GitHub Actions jobs to THIS host's runner. Use a unique
 # value (e.g. my-pi) if more than one host serves the same repos.
-runner_label=pideploy
+runner_label=redeploy
 
-# Portainer URL on this host (for reference/links in `pideploy status`).
+# Portainer URL on this host (for reference/links in `redeploy status`).
 # Deploys run via `docker compose`; Portainer sees them on the shared engine.
 portainer_url=
 
-# Defaults applied to every repo you onboard (override per-repo in .pideploy.conf).
+# Defaults applied to every repo you onboard (override per-repo in .redeploy.conf).
 default_port=8080
 default_branch=main
 auto_serve=false
@@ -26,10 +26,10 @@ go_version=1.23
 
 # Optional: default GitHub Actions secret name a repo's .env is synced to.
 # Leave commented to keep it per-repo (set automatically when a .env exists).
-# dotenv_secret=PIDEPLOY_DOTENV
+# dotenv_secret=REDEPLOY_DOTENV
 
 # REMOTE MODE (set this on a DEV machine, not the host): SSH target of your deploy
-# host. When set, 'pideploy init' registers the runner on the host over SSH and only
+# host. When set, 'redeploy init' registers the runner on the host over SSH and only
 # scaffolds + pushes locally — so you can onboard repos from your laptop. Needs
 # Tailscale SSH (or any SSH) to the host. Leave blank on the host itself.
 # runner_host=you@your-pi

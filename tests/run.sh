@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# pideploy test suite — hermetic: mocks gh/docker/tailscale/systemctl/loginctl
-# (in tests/mocks/), uses a throwaway $HOME/$PIDEPLOY_HOME sandbox, and touches
+# redeploy test suite — hermetic: mocks gh/docker/tailscale/systemctl/loginctl
+# (in tests/mocks/), uses a throwaway $HOME/$REDEPLOY_HOME sandbox, and touches
 # no real services or network. Runs in CI (.github/workflows/ci.yml) + shellcheck.
 #
 # Usage: tests/run.sh            # run everything (exit 0 = all passed)
@@ -23,11 +23,11 @@
 #   Guards ...................... not-in-repo, unknown flag, missing-value usage errors
 #
 # Helpers: assert_eq/contains/absent/ok/fail/file/exit/json/struct (see below).
-# lib() sources the CLI with PIDEPLOY_LIB=1 to unit-test internal functions.
+# lib() sources the CLI with REDEPLOY_LIB=1 to unit-test internal functions.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN="$(cd "$HERE/.." && pwd)/pideploy"
+BIN="$(cd "$HERE/.." && pwd)/redeploy"
 VERBOSE=0; [ "${1:-}" = "-v" ] && VERBOSE=1
 
 PASS=0; FAIL=0
@@ -56,10 +56,10 @@ assert ($3), 'shape check failed'" 2>/dev/null; then ok "$1"; else bad "$1" "bad
 SBOX="$(mktemp -d)"; trap 'rm -rf "$SBOX"' EXIT
 export HOME="$SBOX/home"; mkdir -p "$HOME"
 export XDG_CONFIG_HOME="$HOME/.config"
-export PIDEPLOY_HOME="$SBOX/pd"; export PIDEPLOY_STATE="$SBOX/state"
+export REDEPLOY_HOME="$SBOX/pd"; export REDEPLOY_STATE="$SBOX/state"
 export PATH="$HERE/mocks:$PATH"
 export NO_COLOR=1
-mkdir -p "$PIDEPLOY_HOME/runner-template"
+mkdir -p "$REDEPLOY_HOME/runner-template"
 # sandbox git identity (generic, no PII)
 cat > "$HOME/.gitconfig" <<'G'
 [user]
@@ -69,19 +69,19 @@ cat > "$HOME/.gitconfig" <<'G'
   defaultBranch = main
 G
 # fake runner template so init never downloads
-cat > "$PIDEPLOY_HOME/runner-template/config.sh" <<'C'
+cat > "$REDEPLOY_HOME/runner-template/config.sh" <<'C'
 #!/usr/bin/env bash
 [ "$1" = remove ] && exit 0
 exit 0
 C
-printf '#!/usr/bin/env bash\nsleep 0.1\n' > "$PIDEPLOY_HOME/runner-template/run.sh"
-chmod +x "$PIDEPLOY_HOME/runner-template/config.sh" "$PIDEPLOY_HOME/runner-template/run.sh"
-# Run from inside the (non-git) sandbox so the CWD's .pideploy.conf / git repo
+printf '#!/usr/bin/env bash\nsleep 0.1\n' > "$REDEPLOY_HOME/runner-template/run.sh"
+chmod +x "$REDEPLOY_HOME/runner-template/config.sh" "$REDEPLOY_HOME/runner-template/run.sh"
+# Run from inside the (non-git) sandbox so the CWD's .redeploy.conf / git repo
 # can never leak into load_config — tests are independent of where they're launched.
 cd "$SBOX"
 
 # call a library function in isolation
-lib() { PIDEPLOY_LIB=1 bash -c "source $BIN; $1" 2>&1; }
+lib() { REDEPLOY_LIB=1 bash -c "source $BIN; $1" 2>&1; }
 
 # ════════════════════════════════════════════════════════════════════════════
 grp "Unit: pure functions"
@@ -111,24 +111,24 @@ grp "Unit: configuration"
 # defaults present
 assert_eq "default_port default" "$(lib 'echo "${CFG[default_port]}"')" "8080"
 # global config overrides built-in
-mkdir -p "$XDG_CONFIG_HOME/pideploy"
-echo "default_port=9999" > "$XDG_CONFIG_HOME/pideploy/config"
+mkdir -p "$XDG_CONFIG_HOME/redeploy"
+echo "default_port=9999" > "$XDG_CONFIG_HOME/redeploy/config"
 assert_eq "global config overrides default" "$(lib 'load_config; cfg default_port')" "9999"
 # per-repo overrides global
 rc="$SBOX/fx-repo"; mkdir -p "$rc"; ( cd "$rc" && git init -q )
-echo "default_port=7777" > "$rc/.pideploy.conf"
+echo "default_port=7777" > "$rc/.redeploy.conf"
 assert_eq "repo conf overrides global" "$(lib "cd '$rc' && load_config; cfg default_port")" "7777"
 # config set persists & get reads back
 assert_ok  "config set"  "$BIN config set node_version 20"
 assert_eq  "config get"  "$($BIN config get node_version)" "20"
 assert_contains "config list shows key" "$($BIN config list)" "node_version"
-rm -f "$XDG_CONFIG_HOME/pideploy/config"   # reset for later tests
+rm -f "$XDG_CONFIG_HOME/redeploy/config"   # reset for later tests
 
 # ════════════════════════════════════════════════════════════════════════════
 grp "Host config & onboarding"
 # config template — shareable placeholder, leak-safe (env values blank)
 TPL="$($BIN config template)"
-assert_contains "template: has runner_label"   "$TPL" "runner_label=pideploy"
+assert_contains "template: has runner_label"   "$TPL" "runner_label=redeploy"
 assert_contains "template: documents deploy_host" "$TPL" "deploy_host="
 assert_eq "template: deploy_host is blank (no real value)"  "$(printf '%s' "$TPL" | grep '^deploy_host=')"  "deploy_host="
 assert_eq "template: portainer_url is blank (no real value)" "$(printf '%s' "$TPL" | grep '^portainer_url=')" "portainer_url="
@@ -137,7 +137,7 @@ assert_eq "config.example matches template" "$(cat "$(dirname "$BIN")/config.exa
 # config list/path expose host keys
 assert_contains "config list has deploy_host"  "$($BIN config list)" "deploy_host"
 assert_contains "config list has portainer_url" "$($BIN config list)" "portainer_url"
-assert_contains "config path points at host config" "$($BIN config path)" "pideploy/config"
+assert_contains "config path points at host config" "$($BIN config path)" "redeploy/config"
 # status surfaces the deploy target
 assert_contains "status shows target host" "$($BIN status 2>&1)" "target"
 assert_struct   "status --json has host keys" "$($BIN status --json 2>/dev/null)" \
@@ -147,16 +147,39 @@ assert_exit "onboard without arg → 2" "$BIN onboard" 2
 ( git init -q --bare "$SBOX/onb.git"
   OS="$SBOX/onb-src"; mkdir -p "$OS"; cd "$OS"; git init -q; git remote add origin "$SBOX/onb.git"
   echo '{"name":"o","scripts":{"start":"true"}}' > package.json; git add -A; git commit -qm init; git branch -M main; git push -q -u origin main ) 2>/dev/null
-PIDEPLOY_REPOS="$SBOX/onboarded" $BIN onboard "file://$SBOX/onb.git" --port 8080 --no-dotenv >/dev/null 2>&1
+REDEPLOY_REPOS="$SBOX/onboarded" $BIN onboard "file://$SBOX/onb.git" --port 8080 --no-dotenv >/dev/null 2>&1
 assert_ok   "onboard: cloned the repo onto the host" "[ -d '$SBOX/onboarded/onb/.git' ]"
 assert_file "onboard: ran init (scaffolded Dockerfile)" "$SBOX/onboarded/onb/Dockerfile"
 
 grp "CLI: surface"
-assert_contains "version"       "$($BIN version)" "pideploy 1.2.0"
+assert_contains "version"       "$($BIN version)" "redeploy 2.0.0"
 assert_contains "help commands" "$($BIN help)"    "init"
 assert_contains "help serve"    "$($BIN help)"    "Tailscale"
 assert_fail     "unknown cmd exits nonzero" "$BIN bogus-cmd"
 assert_contains "unknown cmd errors to stderr" "$($BIN bogus-cmd 2>&1)" "unknown command"
+assert_contains "help lists update"  "$($BIN help)" "update"
+
+grp "Rebrand: no 'pideploy' anywhere"
+# the project was renamed pideploy -> redeploy; nothing user-facing may say the old name
+assert_absent "version has no old name"  "$($BIN version)"   "pideploy"
+assert_absent "usage has no old name"    "$($BIN help)"      "pideploy"
+assert_absent "agent has no old name"    "$($BIN --agent)"   "pideploy"
+assert_absent "skill has no old name"    "$($BIN --skill)"   "pideploy"
+assert_absent "config template no old name" "$($BIN config template)" "pideploy"
+
+grp "Self-update (redeploy update)"
+assert_exit     "update: unknown flag → usage (2)" "$BIN update --bogus" 2
+assert_contains "update: help text"   "$($BIN help update)" "latest release"
+# --check, up to date (latest == current): no network, _latest_version stubbed
+assert_struct   "update --check up-to-date (json)" \
+  "$(lib '_latest_version(){ printf %s "$REDEPLOY_VERSION"; }; FORMAT=json; cmd_update --check')" \
+  "d['up_to_date']==True and d['current']==d['latest']"
+assert_contains "update --check up-to-date (text)" \
+  "$(lib '_latest_version(){ printf %s "$REDEPLOY_VERSION"; }; cmd_update --check')" "up to date"
+# --check, newer available: reports not up to date, still no download
+assert_struct   "update --check newer (json)" \
+  "$(lib '_latest_version(){ printf 9.9.9; }; FORMAT=json; cmd_update --check')" \
+  "d['up_to_date']==False and d['latest']=='9.9.9'"
 
 grp "CLI: agent manual"
 AG="$($BIN agent)"
@@ -164,8 +187,9 @@ assert_contains "agent: title"        "$AG" "Agent Operating Manual"
 assert_contains "agent: architecture" "$AG" "self-hosted runner per repo"
 assert_contains "agent: output contract" "$AG" "STDOUT"
 assert_contains "agent: documents json errors" "$AG" '{"error":"<msg>","code":<N>}'
-assert_contains "agent: lists skill command"   "$AG" 'pideploy skill'
-assert_contains "agent: lists help command"    "$AG" 'pideploy help [command]'
+assert_contains "agent: lists skill command"   "$AG" 'redeploy skill'
+assert_contains "agent: lists update command"  "$AG" 'redeploy update'
+assert_contains "agent: lists help command"    "$AG" 'redeploy help [command]'
 assert_contains "agent: --skill flag"          "$AG" '--skill'
 assert_contains "agent: explains label routing" "$AG" "label matching"
 assert_contains "agent: documents deploy pipeline" "$AG" "Deploy pipeline"
@@ -178,9 +202,9 @@ assert_absent "agent manual has no PII" "$AG" "@example"   # sanity: no stray ad
 grp "CLI: self-description, per-command help & skill"
 assert_contains "usage: what-it-is"  "$($BIN help)" "WHAT IT IS"
 assert_contains "usage: how-it-works" "$($BIN help)" "HOW IT WORKS"
-assert_contains "usage: top-line agent directive" "$($BIN help)" "AI AGENTS: run \`pideploy --agent\`"
+assert_contains "usage: top-line agent directive" "$($BIN help)" "AI AGENTS: run \`redeploy --agent\`"
 assert_contains "usage: getting started" "$($BIN help)" "GETTING STARTED"
-assert_contains "usage: first step is setup" "$($BIN help)" "pideploy setup"
+assert_contains "usage: first step is setup" "$($BIN help)" "redeploy setup"
 assert_contains "usage: agent section" "$($BIN help)" "FOR AI AGENTS"
 assert_contains "usage: mentions --skill install" "$($BIN help)" "SKILL.md"
 assert_contains "help <cmd>: init options" "$($BIN help init)" "--port"
@@ -199,11 +223,11 @@ for c in init register onboard deploy status serve unserve url open logs config 
 done
 assert_fail     "help unknown cmd → error" "$BIN help nope"
 SK="$($BIN skill)"
-assert_contains "skill: frontmatter name"  "$SK" "name: pideploy"
+assert_contains "skill: frontmatter name"  "$SK" "name: redeploy"
 assert_contains "skill: has description"   "$SK" "description:"
 assert_contains "skill: directives/rules"  "$SK" "Rules / directives"
 assert_contains "skill: troubleshooting"   "$SK" "Troubleshooting"
-assert_contains "skill: references --agent" "$SK" "pideploy --agent"
+assert_contains "skill: references --agent" "$SK" "redeploy --agent"
 assert_contains "skill: documents json errors" "$SK" '{"error":"<msg>","code":<N>}'
 assert_contains "skill: reference lists skill+help" "$SK" 'help <cmd>'
 assert_contains "skill: lists setup"        "$SK" "setup"
@@ -225,7 +249,7 @@ guard_says() { ( eval "$(sed -n '/^require_git_identity()/,/^}/p' "$BIN")"
   git() { case "$2" in user.name) printf '%s' "$GN";; user.email) printf '%s' "$GE";; esac; }
   GN="$1" GE="$2" require_git_identity 2>/dev/null && printf 'ALLOWED' ; ) ; }
 assert_contains "blocks empty email"          "$(guard_says 'X' '')"                                   "BLOCKED:2"
-assert_contains "blocks generic noreply"      "$(guard_says 'pideploy' 'noreply@users.noreply.github.com')" "BLOCKED:2"
+assert_contains "blocks generic noreply"      "$(guard_says 'redeploy' 'noreply@users.noreply.github.com')" "BLOCKED:2"
 assert_contains "blocks non-address"          "$(guard_says 'X' 'garbage')"                            "BLOCKED:2"
 assert_contains "blocks missing name"         "$(guard_says '' 'real@example.com')"                    "BLOCKED:2"
 assert_contains "allows a real identity"      "$(guard_says 'Real Person' 'real@example.com')"         "ALLOWED"
@@ -249,10 +273,10 @@ assert_contains "init: Dockerfile is node" "$(cat "$REPO/Dockerfile")" "FROM nod
 assert_contains "init: compose binds localhost" "$(cat "$REPO/docker-compose.yml")" "127.0.0.1:8080:8080"
 assert_contains "init: compose sets PORT env"    "$(cat "$REPO/docker-compose.yml")" "PORT=8080"
 assert_contains "init: compose has stack name"  "$(cat "$REPO/docker-compose.yml")" "name: testrepo"
-assert_file     "init: .pideploy.conf created"   "$REPO/.pideploy.conf"
-assert_contains "init: conf has app_name"        "$(cat "$REPO/.pideploy.conf")" "app_name=testrepo"
-assert_contains "init: conf has port"            "$(cat "$REPO/.pideploy.conf")" "default_port=8080"
-assert_absent   "init: conf has no secrets"      "$(cat "$REPO/.pideploy.conf")" "TOKEN"
+assert_file     "init: .redeploy.conf created"   "$REPO/.redeploy.conf"
+assert_contains "init: conf has app_name"        "$(cat "$REPO/.redeploy.conf")" "app_name=testrepo"
+assert_contains "init: conf has port"            "$(cat "$REPO/.redeploy.conf")" "default_port=8080"
+assert_absent   "init: conf has no secrets"      "$(cat "$REPO/.redeploy.conf")" "TOKEN"
 assert_file     "init: .gitignore created"       "$REPO/.gitignore"
 assert_contains "init: gitignore blocks .env"    "$(cat "$REPO/.gitignore")" ".env"
 assert_contains "init: workflow has no PR trigger guard" "$(cat "$REPO/.github/workflows/deploy.yml")" "Do NOT"
@@ -264,12 +288,12 @@ if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; t
   python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' "$REPO/.github/workflows/deploy.yml" 2>/dev/null \
     && ok "init: workflow is valid YAML" || bad "init: workflow is valid YAML" "GitHub Actions YAML did not parse"
 else ok "init: workflow is valid YAML (skip: no pyyaml)"; fi
-assert_contains "init: runner started msg"      "$OUT" "runner pi-testuser-testrepo"
-assert_ok "init: runner registered dir exists"  "[ -d '$PIDEPLOY_HOME/runners/testuser-testrepo' ]"
-assert_ok "init: runner marked active (state)"  "[ -f '$PIDEPLOY_STATE/testuser-testrepo' ]"
+assert_contains "init: runner started msg"      "$OUT" "runner rd-testuser-testrepo"
+assert_ok "init: runner registered dir exists"  "[ -d '$REDEPLOY_HOME/runners/testuser-testrepo' ]"
+assert_ok "init: runner marked active (state)"  "[ -f '$REDEPLOY_STATE/testuser-testrepo' ]"
 assert_contains "init: pushed" "$OUT" "pushed"
 # pushed commit actually landed on the (local) remote
-assert_contains "init: remote has deploy commit" "$(git --git-dir="$SBOX/remote.git" log --oneline 2>&1)" "pideploy"
+assert_contains "init: remote has deploy commit" "$(git --git-dir="$SBOX/remote.git" log --oneline 2>&1)" "redeploy"
 
 ST="$(cd "$REPO" && $BIN status 2>&1)"
 assert_contains "status: shows runner"        "$ST" "testuser-testrepo"
@@ -293,12 +317,12 @@ assert_ok       "init: accepts --yes no-op, exits 0" "(cd '$REPO' && $BIN init -
 # rm deregisters
 RM="$(cd "$REPO" && $BIN rm 2>&1 || true)"
 assert_contains "rm: removes runner"  "$RM" "removed runner"
-assert_ok "rm: runner dir gone"       "[ ! -d '$PIDEPLOY_HOME/runners/testuser-testrepo' ]"
-assert_ok "rm: state cleared"         "[ ! -f '$PIDEPLOY_STATE/testuser-testrepo' ]"
+assert_ok "rm: runner dir gone"       "[ ! -d '$REDEPLOY_HOME/runners/testuser-testrepo' ]"
+assert_ok "rm: state cleared"         "[ ! -f '$REDEPLOY_STATE/testuser-testrepo' ]"
 
 # ════════════════════════════════════════════════════════════════════════════
 grp "Port registry & collision guard"
-rm -f "$PIDEPLOY_HOME/ports"   # clean slate for deterministic allocation
+rm -f "$REDEPLOY_HOME/ports"   # clean slate for deterministic allocation
 for nm in appa appb appc; do  # create 3 distinct pushable repos (no shared port)
   git init -q --bare "$SBOX/$nm.git" >/dev/null 2>&1
   git init -q "$SBOX/p-$nm" >/dev/null 2>&1
@@ -316,8 +340,8 @@ portof() { grep -oE '127\.0\.0\.1:[0-9]+' "$1/docker-compose.yml" | head -1 | gr
 ( cd "$PB" && MOCK_REPO=testuser/appb $BIN init --no-dotenv ) >/dev/null 2>&1
 assert_eq "auto: first app gets default 8080"      "$(portof "$PA")" "8080"
 assert_eq "auto: second app gets next free 8081"   "$(portof "$PB")" "8081"
-assert_contains "registry records appa=8080"       "$(cat "$PIDEPLOY_HOME/ports")" "testuser-appa=8080"
-assert_contains "registry records appb=8081"       "$(cat "$PIDEPLOY_HOME/ports")" "testuser-appb=8081"
+assert_contains "registry records appa=8080"       "$(cat "$REDEPLOY_HOME/ports")" "testuser-appa=8080"
+assert_contains "registry records appb=8081"       "$(cat "$REDEPLOY_HOME/ports")" "testuser-appb=8081"
 assert_contains "ports cmd lists assignments"      "$($BIN ports)" "testuser-appb=8081"
 assert_json     "ports --json valid"               "$($BIN ports --json)"
 assert_struct   "ports --json maps repo→int"       "$($BIN ports --json)" "d['testuser-appb']==8081"
@@ -329,7 +353,7 @@ assert_contains "collision error names the port"   "$(cd "$PC" && MOCK_REPO=test
 assert_eq "stable: re-init reuses the same port"   "$(portof "$PA")" "8080"
 # rm frees the port back into the pool
 ( cd "$PA" && MOCK_REPO=testuser/appa $BIN rm ) >/dev/null 2>&1
-assert_absent "rm frees the port from registry"    "$(cat "$PIDEPLOY_HOME/ports" 2>/dev/null)" "testuser-appa="
+assert_absent "rm frees the port from registry"    "$(cat "$REDEPLOY_HOME/ports" 2>/dev/null)" "testuser-appa="
 
 # ════════════════════════════════════════════════════════════════════════════
 grp "Remote mode (init registers the runner on the host over SSH)"
@@ -337,19 +361,19 @@ RMR="$SBOX/remote-app"
 git init -q --bare "$SBOX/remote-app.git" >/dev/null 2>&1
 git init -q "$RMR" >/dev/null 2>&1; git -C "$RMR" remote add origin "$SBOX/remote-app.git" 2>/dev/null
 echo '{"name":"x","scripts":{"start":"true"}}' > "$RMR/package.json"
-echo "runner_host=testuser@pi" > "$RMR/.pideploy.conf"      # enable remote mode, repo-scoped (no global pollution)
+echo "runner_host=testuser@pi" > "$RMR/.redeploy.conf"      # enable remote mode, repo-scoped (no global pollution)
 git -C "$RMR" add package.json >/dev/null 2>&1; git -C "$RMR" commit -qm i >/dev/null 2>&1
 git -C "$RMR" branch -M main >/dev/null 2>&1; git -C "$RMR" push -q -u origin main >/dev/null 2>&1
 RM_OUT="$(cd "$RMR" && MOCK_REPO=testuser/remote-app $BIN init 2>&1)"
 assert_contains "remote: announces remote mode"      "$RM_OUT" "remote mode"
 assert_file     "remote: scaffolds the workflow"      "$RMR/.github/workflows/deploy.yml"
-assert_contains "remote: workflow uses host's label"  "$(cat "$RMR/.github/workflows/deploy.yml")" "self-hosted, pideploy"
-assert_contains "remote: port comes from the host"    "$(cat "$RMR/.pideploy.conf")" "default_port=8080"
+assert_contains "remote: workflow uses host's label"  "$(cat "$RMR/.github/workflows/deploy.yml")" "self-hosted, redeploy"
+assert_contains "remote: port comes from the host"    "$(cat "$RMR/.redeploy.conf")" "default_port=8080"
 assert_contains "remote: pushed"                      "$RM_OUT" "pushed"
-assert_ok "remote: NO local runner registered here"   "[ ! -d '$PIDEPLOY_HOME/runners/testuser-remote-app' ]"
+assert_ok "remote: NO local runner registered here"   "[ ! -d '$REDEPLOY_HOME/runners/testuser-remote-app' ]"
 # the host-side 'register' command (what remote init invokes over SSH) works directly
 assert_struct "register --json shape & types" "$($BIN register testuser/reg-app --json 2>/dev/null)" \
-  "d['runner']=='pi-testuser-reg-app' and isinstance(d['port'],int) and d['label']=='pideploy' and isinstance(d['registered'],bool)"
+  "d['runner']=='rd-testuser-reg-app' and isinstance(d['port'],int) and d['label']=='redeploy' and isinstance(d['registered'],bool)"
 assert_exit "register without a repo → usage (2)" "$BIN register" 2
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -377,7 +401,7 @@ assert_contains "url: falls back to local when not served" "$(cd "$SBOX/fx-repo"
 
 # ════════════════════════════════════════════════════════════════════════════
 grp "Secrets: no leakage"
-rm -f "$PIDEPLOY_HOME/ports"   # isolate from prior groups' port assignments
+rm -f "$REDEPLOY_HOME/ports"   # isolate from prior groups' port assignments
 SREPO="$SBOX/secret-proj"; mkdir -p "$SREPO" "$SBOX/sremote.git"
 ( cd "$SBOX/sremote.git" && git init -q --bare )
 ( cd "$SREPO" && git init -q && git remote add origin "$SBOX/sremote.git" \
@@ -387,10 +411,10 @@ SENTINEL="SUPER_SECRET_SENTINEL_9f3xQ"
 printf 'API_KEY=%s\n' "$SENTINEL" > "$SREPO/.env"
 SOUT_ALL="$(cd "$SREPO" && $BIN init --port 8080 2>&1)"          # stdout + stderr together
 assert_absent   "init output never contains the secret value"   "$SOUT_ALL" "$SENTINEL"
-assert_absent   ".pideploy.conf has no secret value"            "$(cat "$SREPO/.pideploy.conf")" "$SENTINEL"
-assert_contains ".pideploy.conf records only the secret NAME"   "$(cat "$SREPO/.pideploy.conf")" "dotenv_secret=PIDEPLOY_DOTENV"
+assert_absent   ".redeploy.conf has no secret value"            "$(cat "$SREPO/.redeploy.conf")" "$SENTINEL"
+assert_contains ".redeploy.conf records only the secret NAME"   "$(cat "$SREPO/.redeploy.conf")" "dotenv_secret=REDEPLOY_DOTENV"
 assert_absent   "workflow has no secret value"                  "$(cat "$SREPO/.github/workflows/deploy.yml")" "$SENTINEL"
-assert_contains "workflow references the secret by name"        "$(cat "$SREPO/.github/workflows/deploy.yml")" 'secrets.PIDEPLOY_DOTENV'
+assert_contains "workflow references the secret by name"        "$(cat "$SREPO/.github/workflows/deploy.yml")" 'secrets.REDEPLOY_DOTENV'
 assert_contains "workflow removes .env after deploy"            "$(cat "$SREPO/.github/workflows/deploy.yml")" "rm -f .env"
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
   python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' "$SREPO/.github/workflows/deploy.yml" 2>/dev/null \
@@ -399,7 +423,7 @@ else ok "secrets workflow is valid YAML (skip: no pyyaml)"; fi
 assert_eq       ".env is NOT tracked by git"                    "$(cd "$SREPO" && git ls-files | grep -c '\.env$' || true)" "0"
 assert_contains ".gitignore protects .env"                      "$(cat "$SREPO/.gitignore")" ".env"
 assert_absent   "env command output never contains the value"   "$(cd "$SREPO" && $BIN env 2>&1)" "$SENTINEL"
-assert_contains "env reports the secret name (stdout)"          "$(cd "$SREPO" && $BIN env 2>/dev/null)" "secret=PIDEPLOY_DOTENV"
+assert_contains "env reports the secret name (stdout)"          "$(cd "$SREPO" && $BIN env 2>/dev/null)" "secret=REDEPLOY_DOTENV"
 assert_struct   "env --json shape & types"                      "$(cd "$SREPO" && $BIN env --json 2>/dev/null)" \
   "isinstance(d['secret'],str) and isinstance(d['repo'],str)"
 assert_exit     "env without a .env → error (exit 1)"           "(cd '$SBOX/proj' && $BIN env)" 1
@@ -442,7 +466,7 @@ grp "AI contract: streams & exit codes"
 # data on stdout, progress on stderr
 SOUT="$(cd "$REPO" && $BIN init --port 8080 2>/dev/null)"
 assert_contains "init stdout carries data"     "$SOUT" "repo=testuser/testrepo"
-assert_absent   "init stdout has no progress"  "$SOUT" "pideploy:"
+assert_absent   "init stdout has no progress"  "$SOUT" "redeploy:"
 assert_contains "serve stdout is the url"       "$(cd "$REPO" && $BIN serve 8080 2>/dev/null)" "https://test-pi.tailnet.ts.net/"
 # exit codes: 0 ok · 1 runtime · 2 usage
 assert_exit "doctor exits 0 when healthy"  "$BIN doctor" 0
